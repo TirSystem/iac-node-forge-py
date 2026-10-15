@@ -32,6 +32,10 @@ class ServerNotFoundError(ProviderError):
     """The provider has no server with the requested identifier."""
 
 
+class PowerActionUnsupportedError(ProviderError):
+    """The provider does not declare the capability of the power action."""
+
+
 class UnknownOptionKindError(ProviderError):
     """The provider does not offer options of the requested kind."""
 
@@ -85,6 +89,10 @@ class ConfigurationNotFoundError(UseCaseError):
 
 class AmbiguousConfigurationError(UseCaseError):
     """More than one provider configuration matches the given name."""
+
+
+class OperationNotFoundError(UseCaseError):
+    """No recorded operation has the given identifier."""
 
 
 class NoConfigurationError(UseCaseError):

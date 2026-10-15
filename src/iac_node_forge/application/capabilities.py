@@ -4,11 +4,17 @@ The set a provider supports is declared by its adapter (ADR-0002); this list
 lets a client show the others as unsupported instead of hiding them.
 """
 
+from collections.abc import Mapping
+from types import MappingProxyType
+
+from iac_node_forge.domain.power_action import PowerAction
+
 LIST_SERVERS = "list_servers"
 LIST_SERVER_OPTIONS = "list_server_options"
 INSPECT_SERVER = "inspect_server"
 PROVISION_SERVER = "provision_server"
 START_SERVER = "start_server"
+SHUTDOWN_SERVER = "shutdown_server"
 STOP_SERVER = "stop_server"
 RESTART_SERVER = "restart_server"
 DELETE_SERVER = "delete_server"
@@ -19,7 +25,20 @@ KNOWN_ACTIONS: tuple[str, ...] = (
     INSPECT_SERVER,
     PROVISION_SERVER,
     START_SERVER,
+    SHUTDOWN_SERVER,
     STOP_SERVER,
     RESTART_SERVER,
     DELETE_SERVER,
 )
+
+POWER_ACTION_CAPABILITY: Mapping[PowerAction, str] = MappingProxyType(
+    {
+        PowerAction.START: START_SERVER,
+        PowerAction.SHUTDOWN: SHUTDOWN_SERVER,
+        PowerAction.STOP: STOP_SERVER,
+        PowerAction.RESTART: RESTART_SERVER,
+    }
+)
+"""The capability name a provider declares for each power action, defined once."""
+
+POWER_CAPABILITIES: frozenset[str] = frozenset(POWER_ACTION_CAPABILITY.values())

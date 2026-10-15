@@ -27,3 +27,11 @@ class MissingCredentialError(DomainError):
 
 class NotSingleCredentialError(DomainError):
     """A single value was requested from credentials that hold several."""
+
+
+class OperationStateError(DomainError):
+    """An operation's state and end time disagree, or an ended one was changed."""
+
+
+class OperationTextTooLongError(DomainError):
+    """The detail or the provider reference of an operation exceeds its bound."""

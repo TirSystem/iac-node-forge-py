@@ -14,7 +14,7 @@ from iac_node_forge.application.errors import (
     UnknownOptionKindError,
 )
 from iac_node_forge.application.ports import ProviderPort
-from tests.contract.conftest import READ_ONLY_CAPABILITIES
+from tests.contract.conftest import ALL_CAPABILITIES
 from tests.contract.provider_under_test import ProviderUnderTest
 
 
@@ -47,23 +47,35 @@ def test_validate_access_fails_with_reason_for_wrong_credentials(
     assert not [v for v in provider_under_test.secret_values if v in result.reason]
 
 
-def test_discover_capabilities_returns_read_only_set(
+def test_discover_capabilities_returns_read_and_power_set(
     provider_under_test: ProviderUnderTest,
 ) -> None:
     capabilities = provider_under_test.provider.discover_capabilities(
         provider_under_test.configuration
     )
 
-    assert capabilities == READ_ONLY_CAPABILITIES
+    assert capabilities == ALL_CAPABILITIES
 
 
-def test_discover_capabilities_declares_no_write_capability(
+def test_discover_capabilities_declares_no_write_beyond_power(
     provider_under_test: ProviderUnderTest,
 ) -> None:
     capabilities = provider_under_test.provider.discover_capabilities(
         provider_under_test.configuration
     )
-    write_words = ("create", "update", "delete", "remove", "power", "snapshot")
+    # The four power capabilities are the only declared writes (ADR-0006).
+    write_words = (
+        "create",
+        "provision",
+        "update",
+        "delete",
+        "remove",
+        "cancel",
+        "reinstall",
+        "rescue",
+        "snapshot",
+        "migrate",
+    )
 
     assert capabilities
     assert not [

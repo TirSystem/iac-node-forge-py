@@ -15,6 +15,7 @@ from iac_node_forge.domain.provider_configuration import ProviderConfiguration
 from tests.unit.application.fakes import (
     FailingProvider,
     FakeConfigurationStore,
+    FakePowerProvider,
     FakeProvider,
     FakeProviderResolver,
 )
@@ -101,6 +102,9 @@ def test_list_servers_reports_a_rejected_token_as_a_failure() -> None:
 def test_list_servers_reports_unobtainable_credentials_as_a_failure() -> None:
     class NoCredentials:
         def provider_for(self, configuration: ProviderConfiguration) -> FakeProvider:
+            raise CredentialNotFoundError("gone")
+
+        def power_for(self, configuration: ProviderConfiguration) -> FakePowerProvider:
             raise CredentialNotFoundError("gone")
 
     store = FakeConfigurationStore()
