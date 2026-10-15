@@ -54,12 +54,12 @@ def test_fake_credential_prompt_satisfies_credential_prompt() -> None:
 
 
 def test_provider_validate_access_succeeds_for_accepted_secret() -> None:
-    result = FakeProvider().validate_access("a", Credentials("secret"))
+    result = FakeProvider().validate_access("a", Credentials.single("secret"))
     assert result.succeeded
 
 
 def test_provider_validate_access_fails_with_reason_for_wrong_secret() -> None:
-    result = FakeProvider().validate_access("a", Credentials("wrong"))
+    result = FakeProvider().validate_access("a", Credentials.single("wrong"))
     assert not result.succeeded
     assert result.reason != ""
 
@@ -98,7 +98,7 @@ def test_configuration_store_managed_servers_filters_by_configuration() -> None:
 def test_credential_store_get_returns_stored_credentials() -> None:
     store = FakeCredentialStore()
     reference = CredentialReference("lab", "keyring")
-    credentials = Credentials("s3cret")
+    credentials = Credentials.single("s3cret")
     store.put(reference, credentials)
     assert store.get(reference) == credentials
 
@@ -106,5 +106,6 @@ def test_credential_store_get_returns_stored_credentials() -> None:
 def test_credential_prompt_returns_credentials_and_records_provider() -> None:
     prompt = FakeCredentialPrompt("typed")
     credentials = prompt.ask(ProviderKind.CONTABO)
-    assert credentials.secret == "typed"
+    assert credentials.names == ProviderKind.CONTABO.credential_names
+    assert credentials.get("client_id") == "typed"
     assert prompt.asked == [ProviderKind.CONTABO]

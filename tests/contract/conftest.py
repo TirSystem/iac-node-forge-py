@@ -89,7 +89,7 @@ def configuration_for(address: str) -> ProviderConfiguration:
 
 @pytest.fixture
 def proxmox_provider(mock_proxmox: MockProxmoxServer) -> ProxmoxProvider:
-    return ProxmoxProvider(Credentials(TOKEN), timeout=2.0)
+    return ProxmoxProvider(Credentials.single(TOKEN), timeout=2.0)
 
 
 @pytest.fixture(params=["fake", "proxmox"])
@@ -97,7 +97,7 @@ def provider_case(
     request: pytest.FixtureRequest, mock_proxmox: MockProxmoxServer
 ) -> ProviderCase:
     if request.param == "proxmox":
-        provider: ProviderPort = ProxmoxProvider(Credentials(TOKEN), timeout=2.0)
+        provider: ProviderPort = ProxmoxProvider(Credentials.single(TOKEN), timeout=2.0)
     else:
         provider = FakeProvider(
             accepted_secret=TOKEN,

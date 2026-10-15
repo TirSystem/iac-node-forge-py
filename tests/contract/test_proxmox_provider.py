@@ -36,7 +36,9 @@ def test_validate_access_fails_with_reason_for_rejected_status(
 ) -> None:
     mock_proxmox.state.forced_status = status
 
-    result = proxmox_provider.validate_access(mock_proxmox.address, Credentials(TOKEN))
+    result = proxmox_provider.validate_access(
+        mock_proxmox.address, Credentials.single(TOKEN)
+    )
 
     assert not result.succeeded
     assert str(status) in result.reason
@@ -47,7 +49,9 @@ def test_validate_access_fails_for_server_error(
 ) -> None:
     mock_proxmox.state.forced_status = 500
 
-    result = proxmox_provider.validate_access(mock_proxmox.address, Credentials(TOKEN))
+    result = proxmox_provider.validate_access(
+        mock_proxmox.address, Credentials.single(TOKEN)
+    )
 
     assert not result.succeeded
     assert "500" in result.reason
@@ -61,7 +65,7 @@ def test_validate_access_fails_for_unreachable_address(
         port = probe.getsockname()[1]
 
     result = proxmox_provider.validate_access(
-        f"http://127.0.0.1:{port}", Credentials(TOKEN)
+        f"http://127.0.0.1:{port}", Credentials.single(TOKEN)
     )
 
     assert not result.succeeded
@@ -73,9 +77,9 @@ def test_validate_access_fails_when_provider_is_slower_than_timeout(
     mock_proxmox: MockProxmoxServer,
 ) -> None:
     mock_proxmox.state.delay_seconds = 1.0
-    provider = ProxmoxProvider(Credentials(TOKEN), timeout=0.2)
+    provider = ProxmoxProvider(Credentials.single(TOKEN), timeout=0.2)
 
-    result = provider.validate_access(mock_proxmox.address, Credentials(TOKEN))
+    result = provider.validate_access(mock_proxmox.address, Credentials.single(TOKEN))
 
     assert not result.succeeded
     assert "did not answer" in result.reason
@@ -86,7 +90,7 @@ def test_validate_access_fails_for_tls_error_against_plain_http_port(
 ) -> None:
     https_address = mock_proxmox.address.replace("http://", "https://")
 
-    result = proxmox_provider.validate_access(https_address, Credentials(TOKEN))
+    result = proxmox_provider.validate_access(https_address, Credentials.single(TOKEN))
 
     assert not result.succeeded
     assert result.reason
@@ -95,7 +99,7 @@ def test_validate_access_fails_for_tls_error_against_plain_http_port(
 def test_list_servers_raises_authentication_error_for_expired_token(
     mock_proxmox: MockProxmoxServer,
 ) -> None:
-    provider = ProxmoxProvider(Credentials(WRONG_TOKEN), timeout=2.0)
+    provider = ProxmoxProvider(Credentials.single(WRONG_TOKEN), timeout=2.0)
 
     with pytest.raises(ProviderAuthenticationError):
         provider.list_servers(configuration_for(mock_proxmox.address))
@@ -114,7 +118,7 @@ def test_list_servers_raises_unreachable_error_on_timeout(
     mock_proxmox: MockProxmoxServer,
 ) -> None:
     mock_proxmox.state.delay_seconds = 1.0
-    provider = ProxmoxProvider(Credentials(TOKEN), timeout=0.2)
+    provider = ProxmoxProvider(Credentials.single(TOKEN), timeout=0.2)
 
     with pytest.raises(ProviderUnreachableError):
         provider.list_servers(configuration_for(mock_proxmox.address))
@@ -134,7 +138,7 @@ def test_only_get_requests_are_issued(
 ) -> None:
     configuration = configuration_for(mock_proxmox.address)
 
-    proxmox_provider.validate_access(mock_proxmox.address, Credentials(TOKEN))
+    proxmox_provider.validate_access(mock_proxmox.address, Credentials.single(TOKEN))
     proxmox_provider.discover_capabilities(configuration)
     proxmox_provider.list_server_options(configuration, "node")
     proxmox_provider.list_server_options(configuration, "storage")
@@ -168,15 +172,17 @@ def test_secret_never_appears_in_errors_reprs_or_logs(
     caplog.set_level(logging.DEBUG)
     configuration = configuration_for(mock_proxmox.address)
     texts: list[str] = []
-    wrong = ProxmoxProvider(Credentials(TOKEN + "x"), timeout=0.2)
-    right = ProxmoxProvider(Credentials(TOKEN), timeout=0.2)
-    texts.extend([repr(wrong), repr(right), repr(Credentials(TOKEN))])
+    wrong = ProxmoxProvider(Credentials.single(TOKEN + "x"), timeout=0.2)
+    right = ProxmoxProvider(Credentials.single(TOKEN), timeout=0.2)
+    texts.extend([repr(wrong), repr(right), repr(Credentials.single(TOKEN))])
 
     with pytest.raises(ProviderAuthenticationError) as auth_error:
         wrong.list_servers(configuration)
     texts.append(str(auth_error.value))
     texts.append(
-        wrong.validate_access(mock_proxmox.address, Credentials(TOKEN + "x")).reason
+        wrong.validate_access(
+            mock_proxmox.address, Credentials.single(TOKEN + "x")
+        ).reason
     )
 
     mock_proxmox.state.forced_status = 500

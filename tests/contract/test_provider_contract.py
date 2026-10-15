@@ -22,7 +22,7 @@ from tests.contract.conftest import (
 
 def test_validate_access_succeeds_with_valid_token(provider_case: ProviderCase) -> None:
     result = provider_case.provider.validate_access(
-        provider_case.configuration.address, Credentials(provider_case.token)
+        provider_case.configuration.address, Credentials.single(provider_case.token)
     )
 
     assert result.succeeded
@@ -32,7 +32,8 @@ def test_validate_access_fails_with_reason_for_wrong_token(
     provider_case: ProviderCase,
 ) -> None:
     result = provider_case.provider.validate_access(
-        provider_case.configuration.address, Credentials(provider_case.wrong_token)
+        provider_case.configuration.address,
+        Credentials.single(provider_case.wrong_token),
     )
 
     assert not result.succeeded

@@ -37,7 +37,7 @@ def make(
 def test_validate_access_reports_success_for_accepted_credentials() -> None:
     use_case, _, _ = make()
 
-    check = use_case.validate_access(KIND, ADDRESS, Credentials(SECRET))
+    check = use_case.validate_access(KIND, ADDRESS, Credentials.single(SECRET))
 
     assert check.succeeded
 
@@ -45,7 +45,7 @@ def test_validate_access_reports_success_for_accepted_credentials() -> None:
 def test_validate_access_reports_the_reason_for_rejected_credentials() -> None:
     use_case, configurations, _ = make()
 
-    check = use_case.validate_access(KIND, ADDRESS, Credentials("wrong"))
+    check = use_case.validate_access(KIND, ADDRESS, Credentials.single("wrong"))
 
     assert not check.succeeded
     assert check.reason == "credentials rejected"
@@ -54,7 +54,7 @@ def test_validate_access_reports_the_reason_for_rejected_credentials() -> None:
 
 def test_save_creates_configuration_without_reference_when_not_caching() -> None:
     use_case, configurations, credentials = make()
-    use_case.validate_access(KIND, ADDRESS, Credentials(SECRET))
+    use_case.validate_access(KIND, ADDRESS, Credentials.single(SECRET))
 
     saved = use_case.save_provider_configuration(KIND, ADDRESS, "Lab", False)
 
@@ -71,14 +71,14 @@ def test_save_creates_configuration_without_reference_when_not_caching() -> None
 
 def test_save_caches_credentials_under_a_new_reference_when_asked() -> None:
     use_case, configurations, credentials = make()
-    use_case.validate_access(KIND, ADDRESS, Credentials(SECRET))
+    use_case.validate_access(KIND, ADDRESS, Credentials.single(SECRET))
 
     saved = use_case.save_provider_configuration(KIND, ADDRESS, "Lab", True)
 
     (stored,) = configurations.load_all()
     reference = stored.credential_reference
     assert reference is not None
-    assert credentials.get(reference).secret == SECRET
+    assert credentials.get(reference).single_value() == SECRET
     assert saved.credential_cached
     assert SECRET not in repr(stored)
 
@@ -94,7 +94,7 @@ def test_save_is_rejected_without_a_successful_check() -> None:
 
 def test_save_is_rejected_after_a_failed_check() -> None:
     use_case, configurations, _ = make()
-    use_case.validate_access(KIND, ADDRESS, Credentials("wrong"))
+    use_case.validate_access(KIND, ADDRESS, Credentials.single("wrong"))
 
     with pytest.raises(AccessNotValidatedError):
         use_case.save_provider_configuration(KIND, ADDRESS, "Lab", False)
@@ -104,7 +104,7 @@ def test_save_is_rejected_after_a_failed_check() -> None:
 
 def test_save_is_rejected_for_an_address_that_was_not_validated() -> None:
     use_case, configurations, _ = make()
-    use_case.validate_access(KIND, ADDRESS, Credentials(SECRET))
+    use_case.validate_access(KIND, ADDRESS, Credentials.single(SECRET))
 
     with pytest.raises(AccessNotValidatedError):
         use_case.save_provider_configuration(KIND, "https://other:8006", "Lab", False)
@@ -114,9 +114,9 @@ def test_save_is_rejected_for_an_address_that_was_not_validated() -> None:
 
 def test_save_is_rejected_when_the_display_name_exists() -> None:
     use_case, configurations, credentials = make()
-    use_case.validate_access(KIND, ADDRESS, Credentials(SECRET))
+    use_case.validate_access(KIND, ADDRESS, Credentials.single(SECRET))
     use_case.save_provider_configuration(KIND, ADDRESS, "Lab", False)
-    use_case.validate_access(KIND, ADDRESS, Credentials(SECRET))
+    use_case.validate_access(KIND, ADDRESS, Credentials.single(SECRET))
 
     with pytest.raises(DuplicateDisplayNameError):
         use_case.save_provider_configuration(KIND, ADDRESS, " lab ", True)
@@ -127,7 +127,7 @@ def test_save_is_rejected_when_the_display_name_exists() -> None:
 
 def test_save_without_validation_is_rejected_after_a_successful_save() -> None:
     use_case, _, _ = make()
-    use_case.validate_access(KIND, ADDRESS, Credentials(SECRET))
+    use_case.validate_access(KIND, ADDRESS, Credentials.single(SECRET))
     use_case.save_provider_configuration(KIND, ADDRESS, "Lab", False)
 
     with pytest.raises(AccessNotValidatedError):
@@ -136,7 +136,7 @@ def test_save_without_validation_is_rejected_after_a_successful_save() -> None:
 
 def test_save_reports_unavailable_store_and_keeps_the_configuration() -> None:
     use_case, configurations, _ = make(FakeCredentialStore(unavailable=True))
-    use_case.validate_access(KIND, ADDRESS, Credentials(SECRET))
+    use_case.validate_access(KIND, ADDRESS, Credentials.single(SECRET))
 
     saved = use_case.save_provider_configuration(KIND, ADDRESS, "Lab", True)
 

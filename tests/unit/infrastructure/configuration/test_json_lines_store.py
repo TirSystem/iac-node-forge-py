@@ -96,11 +96,12 @@ def test_file_holds_no_secret_after_credential_put(
     secret = "s3cr3t-token-value"
     JsonLinesConfigurationStore(path).save(_configuration())
 
-    PlatformCredentialStore().put(REFERENCE, Credentials(secret))
+    PlatformCredentialStore().put(REFERENCE, Credentials.single(secret))
     JsonLinesConfigurationStore(path).save(_configuration(display_name="Again"))
 
     assert secret not in path.read_text("utf-8")
-    assert memory_keyring.get_password("iac-node-forge", "lab-proxmox") == secret
+    stored = memory_keyring.get_password("iac-node-forge", "lab-proxmox") or ""
+    assert secret in stored
     allowed = {
         "record_type",
         "configuration_id",
