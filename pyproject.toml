@@ -15,6 +15,7 @@ dev = [
     "pytest>=8.3",
     "ruff>=0.8",
     "mypy>=1.13",
+    "import-linter>=2.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -29,8 +30,32 @@ select = ["E", "F", "I", "N", "UP", "B"]
 
 [tool.mypy]
 strict = true
-files = ["src"]
+files = ["src", "tests"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.importlinter]
+root_package = "iac_node_forge"
+
+[[tool.importlinter.contracts]]
+name = "Layers point inward"
+type = "layers"
+containers = ["iac_node_forge"]
+layers = [
+    "(presentation)",
+    "(infrastructure)",
+    "application",
+    "domain",
+]
+
+[[tool.importlinter.contracts]]
+name = "Domain imports no outer layer"
+type = "forbidden"
+source_modules = ["iac_node_forge.domain"]
+forbidden_modules = [
+    "iac_node_forge.application",
+    "iac_node_forge.infrastructure",
+    "iac_node_forge.presentation",
+]
