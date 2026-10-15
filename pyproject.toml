@@ -43,7 +43,7 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-m 'not integration'"
 markers = [
-    "integration: read-only tests against a real Proxmox VE; need PVE_TOKEN",
+    "integration: read-only tests against a real provider; need PVE_TOKEN (Proxmox VE) or the four CONTABO_ variables (Contabo)",
 ]
 
 [tool.importlinter]
