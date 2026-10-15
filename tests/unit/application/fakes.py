@@ -1,5 +1,6 @@
 """In-memory fakes of the application ports, for tests."""
 
+from iac_node_forge.application.errors import ServerNotFoundError
 from iac_node_forge.domain.access_result import AccessResult
 from iac_node_forge.domain.capability import Capability
 from iac_node_forge.domain.credential_reference import CredentialReference
@@ -53,7 +54,7 @@ class FakeProvider:
         for server in self._servers:
             if server.server_identifier == server_identifier:
                 return server
-        raise KeyError(server_identifier)
+        raise ServerNotFoundError(server_identifier)
 
 
 class FakeConfigurationStore:

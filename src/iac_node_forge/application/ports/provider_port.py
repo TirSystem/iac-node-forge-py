@@ -27,7 +27,10 @@ class ProviderPort(Protocol):
     def list_server_options(
         self, configuration: ProviderConfiguration, option_kind: str
     ) -> tuple[ServerOption, ...]:
-        """Return the options of one kind the provider offers."""
+        """Return the options of one kind the provider offers.
+
+        Raises UnknownOptionKindError for a kind the provider does not offer.
+        """
         ...
 
     def list_servers(self, configuration: ProviderConfiguration) -> tuple[Server, ...]:
@@ -37,5 +40,8 @@ class ProviderPort(Protocol):
     def get_server(
         self, configuration: ProviderConfiguration, server_identifier: str
     ) -> Server:
-        """Return one server by its provider identifier."""
+        """Return one server by its provider identifier.
+
+        Raises ServerNotFoundError when the provider has no such server.
+        """
         ...
