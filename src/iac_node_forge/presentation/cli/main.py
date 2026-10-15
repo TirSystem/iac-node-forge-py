@@ -6,6 +6,9 @@ import sys
 from collections.abc import Sequence
 from contextlib import redirect_stderr, redirect_stdout
 
+from iac_node_forge.application.errors import ConfigurationFormatError, UseCaseError
+from iac_node_forge.application.use_cases import find_configuration
+from iac_node_forge.domain.provider_kind import ProviderKind
 from iac_node_forge.presentation.cli import exit_codes
 from iac_node_forge.presentation.cli.commands import (
     capabilities,
@@ -30,8 +33,11 @@ environment variables:
 
 exit codes:
   0  success
-  1  a failure you can act on: provider unreachable or rejected the token,
-     configuration or server not found, unknown option kind, nothing configured
+  1  a failure you can act on: provider unreachable or rejected the
+     credentials (Proxmox VE: API token; Contabo: client ID, client secret,
+     API user and API password), configuration or server not found, unknown
+     option kind for the provider, nothing configured, a provider failed in
+     'servers'
   2  usage error
 """
 
@@ -40,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the parser of every command."""
     parser = argparse.ArgumentParser(
         prog=PROGRAM,
-        description="Read-only command-line client for Proxmox VE servers.",
+        description="Read-only command-line client for Proxmox VE and Contabo servers.",
         epilog=_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -74,11 +80,22 @@ def main(argv: Sequence[str] | None = None, services: CliServices | None = None)
         with redirect_stdout(stderr):
             parser.print_help()
         return exit_codes.USAGE
+    active = services
     try:
-        active = services or build_services(os.environ, stdout, stderr)
+        active = active or build_services(os.environ, stdout, stderr)
         return int(handler(arguments, active))
     except HANDLED_ERRORS as error:
-        write_line(stderr, describe(error, getattr(arguments, "configuration", None)))
+        name = getattr(arguments, "configuration", None)
+        kind = _kind_of(active, name) if active and name else None
+        write_line(stderr, describe(error, name, kind))
     except KeyboardInterrupt:
         write_line(stderr, "error: interrupted")
     return exit_codes.FAILURE
+
+
+def _kind_of(services: CliServices, name: str) -> ProviderKind | None:
+    """Return the provider kind of the named configuration, if it can be found."""
+    try:
+        return find_configuration(services.configurations, name).provider_kind
+    except (UseCaseError, ConfigurationFormatError):
+        return None

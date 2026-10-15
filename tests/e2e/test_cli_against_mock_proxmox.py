@@ -9,7 +9,7 @@ import json
 import socket
 
 from tests.contract.conftest import TOKEN, WRONG_TOKEN
-from tests.e2e.conftest import CliSession
+from tests.e2e.conftest import CliSession, reference_name
 
 SECRET_PART = TOKEN.split("=", 1)[1]
 
@@ -155,7 +155,7 @@ def test_no_secret_is_written_to_the_configuration_file(
     assert TOKEN not in text
     assert SECRET_PART not in text
     assert "credential_reference" in text
-    stored = cli_session.keyring.get_password("iac-node-forge", _reference_name(text))
+    stored = cli_session.keyring.get_password("iac-node-forge", reference_name(text))
     assert json.loads(stored or "") == {"token": TOKEN}
 
 
@@ -228,13 +228,5 @@ def test_servers_report_an_unreachable_provider_without_a_stack_trace(
     result = cli_session.run("servers")
 
     assert result.code == 1
-    assert "provider 'Lab' could not be read (unreachable)" in result.err
+    assert "provider 'Lab' (Proxmox VE) could not be read (unreachable)" in result.err
     assert "Traceback" not in result.err
-
-
-def _reference_name(configuration_text: str) -> str:
-    for line in configuration_text.splitlines():
-        row = json.loads(line)
-        if row["record_type"] == "credential_reference":
-            return str(row["name"])
-    raise AssertionError("no credential reference in the configuration file")

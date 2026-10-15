@@ -22,6 +22,7 @@ from iac_node_forge.domain.access_result import AccessResult
 from iac_node_forge.domain.capability import Capability
 from iac_node_forge.domain.credentials import Credentials
 from iac_node_forge.domain.provider_configuration import ProviderConfiguration
+from iac_node_forge.domain.provider_kind import ProviderKind
 from iac_node_forge.domain.server import Server
 from iac_node_forge.domain.server_option import ServerOption
 from iac_node_forge.infrastructure import _http
@@ -104,7 +105,8 @@ class ProxmoxProvider:
         if option_kind == OPTION_KIND_STORAGE:
             return self._storage_options(configuration)
         raise UnknownOptionKindError(
-            f"Proxmox VE offers no options of kind {option_kind!r}"
+            f"Proxmox VE offers no options of kind {option_kind!r}; valid kinds: "
+            + ", ".join(ProviderKind.PROXMOX_VE.option_kinds)
         )
 
     def list_servers(self, configuration: ProviderConfiguration) -> tuple[Server, ...]:

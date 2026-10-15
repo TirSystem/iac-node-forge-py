@@ -1,6 +1,7 @@
 """In-memory fakes of the application ports, for tests."""
 
 from iac_node_forge.application.errors import (
+    CredentialEntryInvalidError,
     CredentialNotFoundError,
     CredentialStoreUnavailableError,
     ProviderError,
@@ -97,6 +98,9 @@ class FakeCredentialStore:
     def __init__(self, unavailable: bool = False) -> None:
         self.secrets: dict[CredentialReference, Credentials] = {}
         self.unavailable = unavailable
+        # References whose entry exists but cannot be read, as a corrupt keyring
+        # entry would be.
+        self.invalid: set[CredentialReference] = set()
 
     def put(self, reference: CredentialReference, credentials: Credentials) -> None:
         if self.unavailable:
@@ -106,6 +110,8 @@ class FakeCredentialStore:
     def get(self, reference: CredentialReference) -> Credentials:
         if self.unavailable:
             raise CredentialStoreUnavailableError("no keyring")
+        if reference in self.invalid:
+            raise CredentialEntryInvalidError(f"entry {reference.name!r} unreadable")
         if reference not in self.secrets:
             raise CredentialNotFoundError(reference.name)
         return self.secrets[reference]

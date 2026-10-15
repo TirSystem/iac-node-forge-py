@@ -15,3 +15,18 @@ class ProviderKind(Enum):
         if self is ProviderKind.CONTABO:
             return ("client_id", "client_secret", "api_user", "api_password")
         return ("token",)
+
+    @property
+    def option_kinds(self) -> tuple[str, ...]:
+        """Return the kinds of server option this provider offers."""
+        if self is ProviderKind.CONTABO:
+            return ("region", "image")
+        return ("node", "storage")
+
+    @property
+    def default_address(self) -> str | None:
+        """Return the address of the provider's public API, or None when each
+        installation has its own."""
+        if self is ProviderKind.CONTABO:
+            return "https://api.contabo.com"
+        return None

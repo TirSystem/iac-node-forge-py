@@ -98,5 +98,9 @@ def _failure(
     else:
         category = FailureCategory.OTHER
     return ProviderFailure(
-        target.configuration_id, target.display_name, category, str(error)
+        target.configuration_id,
+        target.display_name,
+        target.provider_kind,
+        category,
+        str(error),
     )

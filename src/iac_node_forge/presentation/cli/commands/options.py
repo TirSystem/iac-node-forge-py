@@ -6,6 +6,7 @@ from iac_node_forge.presentation.cli import exit_codes
 from iac_node_forge.presentation.cli.commands import Subparsers
 from iac_node_forge.presentation.cli.commands.capabilities import build_use_case
 from iac_node_forge.presentation.cli.output import write_line
+from iac_node_forge.presentation.cli.provider_words import describe_option_kinds
 from iac_node_forge.presentation.cli.services import CliServices
 
 
@@ -13,10 +14,11 @@ def add_parser(subparsers: Subparsers) -> None:
     """Register ``options``."""
     parser = subparsers.add_parser(
         "options",
-        help="show the server options of one kind, such as node or storage",
+        help="show the server options of one kind the provider offers",
+        description=f"Option kinds by provider: {describe_option_kinds()}.",
     )
     parser.add_argument("configuration", help="identifier or display name")
-    parser.add_argument("kind", help="option kind, such as node or storage")
+    parser.add_argument("kind", help="option kind of the configuration's provider")
     parser.set_defaults(handler=run)
 
 

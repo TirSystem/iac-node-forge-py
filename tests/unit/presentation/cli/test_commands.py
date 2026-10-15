@@ -110,7 +110,7 @@ def test_provider_add_caches_the_token_when_asked() -> None:
     result = harness.run(*ADD, "--cache-credential")
 
     assert result.code == 0
-    assert "platform credential store" in result.out
+    assert "credentials are kept in the platform credential store" in result.out
     (saved,) = harness.configurations.load_all()
     assert saved.credential_reference is not None
     assert (
@@ -221,7 +221,10 @@ def test_servers_show_the_others_when_one_provider_is_unreachable() -> None:
 
     assert result.code == 1
     assert "web" in result.out
-    assert "provider 'Edge' could not be read (unreachable): no route" in result.err
+    assert (
+        "provider 'Edge' (Proxmox VE) could not be read (unreachable): no route"
+        in result.err
+    )
     assert "Traceback" not in result.err
 
 
@@ -268,7 +271,7 @@ def test_unreachable_provider_names_the_provider_and_hints() -> None:
     result = harness.run("capabilities", "Lab")
 
     assert result.code == 1
-    assert "provider 'Lab' could not be reached: timed out" in result.err
+    assert "provider 'Lab' (Proxmox VE) could not be reached: timed out" in result.err
     assert "Hint: check the address and the network; for a self-signed" in result.err
     assert VERIFY_ENV_VAR in result.err
     assert "Traceback" not in result.err
@@ -282,7 +285,7 @@ def test_rejected_token_exits_one_with_a_hint() -> None:
     result = harness.run("server", "Lab", "100")
 
     assert result.code == 1
-    assert "rejected the token" in result.err
+    assert "rejected the API token" in result.err
 
 
 def test_stored_credential_is_used_without_asking() -> None:

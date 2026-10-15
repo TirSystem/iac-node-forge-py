@@ -36,19 +36,36 @@ provider. Installing the package gives the `iac-node-forge` command;
 ```bash
 iac-node-forge provider add --address https://pve.example:8006 --name Lab
 iac-node-forge provider add --cache-credential   # asks for address and name
+iac-node-forge provider add --kind contabo --name Cloud   # address defaults to https://api.contabo.com
 iac-node-forge capabilities Lab                  # supported and unsupported actions
-iac-node-forge options Lab node                  # option kinds: node, storage
+iac-node-forge options Lab node                  # Proxmox VE: node, storage
+iac-node-forge options Cloud region              # Contabo: region, image
 iac-node-forge servers                           # all configurations
 iac-node-forge servers --configuration Lab
 iac-node-forge server Lab 100
 ```
 
 A configuration is named by its display name (case is ignored) or its id.
-`provider add` asks for the Proxmox VE API token (`USER@REALM!TOKENID=SECRET`)
-without echo, checks it with the provider and saves the configuration. The
-token is never written to the configuration file; with `--cache-credential` it
-is kept in the platform credential store, and later commands use it before
-asking again.
+`provider add` takes `--kind proxmox_ve` (the default) or `--kind contabo`, asks
+for the credentials of that provider without echo, checks them with the
+provider and saves the configuration.
+
+| Provider | Credentials asked for, in order | Address |
+| --- | --- | --- |
+| Proxmox VE | `token`: the API token, `USER@REALM!TOKENID=SECRET` | asked for, such as `https://pve.example:8006` |
+| Contabo | `client_id`, `client_secret`, `api_user`, `api_password` from the customer control panel | `https://api.contabo.com`; `--address` overrides it, for a proxy |
+
+No credential is ever written to the configuration file. With
+`--cache-credential` the values are kept as one entry of the platform credential
+store, and later commands use it before asking again. An entry that cannot be
+read is ignored: one line on standard error names its reference and the
+credentials are asked for instead.
+
+`options` takes the kinds of the configuration's provider: `node` and
+`storage` for Proxmox VE, `region` and `image` for Contabo. Another kind exits
+with 1 and lists the valid kinds. `servers` lists every configuration, Proxmox VE
+and Contabo together; a provider that fails is reported and does not hide the
+servers of the others.
 
 Environment variables:
 
@@ -62,7 +79,7 @@ Output is plain text on standard output; errors go to standard error.
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Success |
-| 1 | A failure you can act on: provider unreachable or token rejected, configuration or server not found, unknown option kind, nothing configured, a provider failed in `servers` |
+| 1 | A failure you can act on: provider unreachable or credentials rejected (Proxmox VE: API token; Contabo: client ID, client secret, API user and API password), configuration or server not found, unknown option kind for the provider, nothing configured, a provider failed in `servers` |
 | 2 | Usage error |
 
 ## Checks
