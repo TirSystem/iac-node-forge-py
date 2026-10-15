@@ -4,8 +4,13 @@
 # privileged. It is for local development only: never use it in CI or on a
 # shared host. The product owner chose this image.
 #
-# The password comes from the environment (PVE_PASSWORD) and has no default,
-# so this file contains no secret.
+# The password comes from PVE_PASSWORD and has no default, so this file contains no
+# secret. Keep it in the git-ignored file tests/integration/pve.env (copy
+# pve.env.example) and pass that file to compose:
+#
+#   docker compose --env-file tests/integration/pve.env #     -f tests/integration/docker-compose.proxmox.yml up -d
+#
+# A PVE_PASSWORD already set in the shell is used when no --env-file is given.
 services:
   proxmox-node1:
     image: maconrad/proxmox:latest
