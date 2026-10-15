@@ -8,7 +8,8 @@
 # secret. Keep it in the git-ignored file tests/integration/pve.env (copy
 # pve.env.example) and pass that file to compose:
 #
-#   docker compose --env-file tests/integration/pve.env \n#     -f tests/integration/docker-compose.proxmox.yml up -d
+#   docker compose --env-file tests/integration/pve.env
+#     -f tests/integration/docker-compose.proxmox.yml up -d
 #
 # A PVE_PASSWORD already set in the shell is used when no --env-file is given.
 services:

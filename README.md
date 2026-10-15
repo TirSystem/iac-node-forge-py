@@ -97,7 +97,7 @@ in CI or on a shared host.
 2. Start the container, passing that file to compose.
 
    ```bash
-   docker compose --env-file tests/integration/pve.env      -f tests/integration/docker-compose.proxmox.yml up -d
+   docker compose --env-file tests/integration/pve.env -f tests/integration/docker-compose.proxmox.yml up -d
    ```
 
    Some images ignore `PVE_PASSWORD`. Set root's password from the value the
@@ -130,7 +130,7 @@ in CI or on a shared host.
 6. Tear down.
 
    ```bash
-   docker compose --env-file tests/integration/pve.env      -f tests/integration/docker-compose.proxmox.yml down
+   docker compose --env-file tests/integration/pve.env -f tests/integration/docker-compose.proxmox.yml down
    ```
 
    Delete `tests/integration/pve.env` when you no longer need it.
