@@ -83,7 +83,7 @@ plain `pytest`, and are skipped when `PVE_TOKEN` is not set, so CI is not
 affected.
 
 Prerequisites: Docker. The container uses the third-party community image
-`maconrad/proxmox` and runs privileged. Run it on your own machine only, never
+`dockurr/proxmox` and runs privileged. Run it on your own machine only, never
 in CI or on a shared host.
 
 1. Put the container's password in the git-ignored file

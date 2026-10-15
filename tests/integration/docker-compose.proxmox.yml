@@ -1,6 +1,6 @@
 # Proxmox VE for the integration tests in tests/integration.
 #
-# WARNING: the image maconrad/proxmox is a third-party community image and runs
+# WARNING: the image dockurr/proxmox is a third-party community image and runs
 # privileged. It is for local development only: never use it in CI or on a
 # shared host. The product owner chose this image.
 #
@@ -13,7 +13,7 @@
 # A PVE_PASSWORD already set in the shell is used when no --env-file is given.
 services:
   proxmox-node1:
-    image: maconrad/proxmox:latest
+    image: dockurr/proxmox:latest
     container_name: proxmox-node1
     privileged: true
     ports:
