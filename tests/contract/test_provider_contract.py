@@ -6,7 +6,10 @@ which shows that the fake and the adapter agree.
 
 import pytest
 
-from iac_node_forge.application.errors import ServerNotFoundError
+from iac_node_forge.application.errors import (
+    ServerNotFoundError,
+    UnknownOptionKindError,
+)
 from iac_node_forge.domain.credentials import Credentials
 from tests.contract.conftest import (
     EXPECTED_NODES,
@@ -77,6 +80,15 @@ def test_list_server_options_returns_storage_of_every_node(
     )
 
     assert options == EXPECTED_STORAGE
+
+
+def test_list_server_options_raises_for_unknown_kind(
+    provider_case: ProviderCase,
+) -> None:
+    with pytest.raises(UnknownOptionKindError):
+        provider_case.provider.list_server_options(
+            provider_case.configuration, "flavour"
+        )
 
 
 def test_list_servers_maps_resources_to_servers(provider_case: ProviderCase) -> None:
