@@ -32,6 +32,7 @@ pip install -e ".[dev]"
 ```bash
 ruff check .
 ruff format --check .
-mypy src
+mypy src tests
+lint-imports
 pytest
 ```
