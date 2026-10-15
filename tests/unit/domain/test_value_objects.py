@@ -15,8 +15,10 @@ from iac_node_forge.domain.errors import (
     CredentialsNotPersistableError,
     DomainError,
     EmptyValueError,
+    MissingCredentialError,
     MissingReasonError,
     NaiveTimestampError,
+    NotSingleCredentialError,
 )
 from iac_node_forge.domain.managed_server_record import ManagedServerRecord
 from iac_node_forge.domain.provider_configuration import (
@@ -62,31 +64,115 @@ def test_credential_reference_is_frozen() -> None:
 
 
 def test_credentials_repr_hides_secret() -> None:
-    assert "hunter2" not in repr(Credentials("hunter2"))
+    assert "hunter2" not in repr(Credentials.single("hunter2"))
 
 
 def test_credentials_str_hides_secret() -> None:
-    assert "hunter2" not in str(Credentials("hunter2"))
+    assert "hunter2" not in str(Credentials.single("hunter2"))
 
 
 def test_credentials_rejects_empty_secret() -> None:
     with pytest.raises(EmptyValueError):
-        Credentials("")
+        Credentials.single("")
+
+
+def test_credentials_rejects_empty_name() -> None:
+    with pytest.raises(EmptyValueError):
+        Credentials({" ": "x"})
+
+
+def test_credentials_rejects_empty_value_among_several() -> None:
+    with pytest.raises(EmptyValueError):
+        Credentials({"a": "1", "b": " "})
+
+
+def test_credentials_rejects_no_values() -> None:
+    with pytest.raises(MissingCredentialError):
+        Credentials({})
+
+
+def test_credentials_single_is_named_token() -> None:
+    credentials = Credentials.single("hunter2")
+
+    assert credentials.names == ("token",)
+    assert credentials.get("token") == "hunter2"
+    assert credentials.single_value() == "hunter2"
+
+
+def test_credentials_get_returns_each_value_by_name() -> None:
+    credentials = Credentials({"a": "one", "b": "two"})
+
+    assert credentials.get("a") == "one"
+    assert credentials.get("b") == "two"
+    assert credentials.names == ("a", "b")
+
+
+def test_credentials_get_raises_for_absent_name() -> None:
+    with pytest.raises(MissingCredentialError, match="'c'") as caught:
+        Credentials({"a": "one"}).get("c")
+
+    assert "one" not in str(caught.value)
+
+
+def test_credentials_single_value_refuses_several() -> None:
+    with pytest.raises(NotSingleCredentialError) as caught:
+        Credentials({"a": "v-alpha", "b": "v-beta"}).single_value()
+
+    assert "v-alpha" not in str(caught.value)
+
+
+def test_credentials_repr_shows_names_but_no_values() -> None:
+    credentials = Credentials({"client_id": "id-9", "api_password": "pw-9"})
+
+    for text in (repr(credentials), str(credentials)):
+        assert "client_id" in text
+        assert "api_password" in text
+        assert "id-9" not in text
+        assert "pw-9" not in text
+
+
+def test_credentials_values_are_read_only_and_detached() -> None:
+    source = {"a": "one"}
+    credentials = Credentials(source)
+    source["a"] = "changed"
+
+    assert credentials.get("a") == "one"
+    with pytest.raises(TypeError):
+        credentials.values["a"] = "x"  # type: ignore[index]
+
+
+def test_credentials_with_several_values_cannot_be_pickled_or_copied() -> None:
+    credentials = Credentials({"a": "one", "b": "two"})
+
+    with pytest.raises(CredentialsNotPersistableError):
+        pickle.dumps(credentials)
+    with pytest.raises(CredentialsNotPersistableError):
+        copy.copy(credentials)
+
+
+def test_provider_kind_declares_credential_names() -> None:
+    assert ProviderKind.PROXMOX_VE.credential_names == ("token",)
+    assert ProviderKind.CONTABO.credential_names == (
+        "client_id",
+        "client_secret",
+        "api_user",
+        "api_password",
+    )
 
 
 def test_credentials_cannot_be_pickled() -> None:
     with pytest.raises(CredentialsNotPersistableError):
-        pickle.dumps(Credentials("hunter2"))
+        pickle.dumps(Credentials.single("hunter2"))
 
 
 def test_credentials_cannot_be_copied() -> None:
     with pytest.raises(CredentialsNotPersistableError):
-        copy.copy(Credentials("hunter2"))
+        copy.copy(Credentials.single("hunter2"))
 
 
 def test_credentials_cannot_be_deep_copied() -> None:
     with pytest.raises(CredentialsNotPersistableError):
-        copy.deepcopy(Credentials("hunter2"))
+        copy.deepcopy(Credentials.single("hunter2"))
 
 
 def test_provider_configuration_defaults_to_no_credential_reference() -> None:

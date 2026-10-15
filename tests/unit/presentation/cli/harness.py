@@ -63,7 +63,13 @@ class Harness:
     @property
     def _factory(self) -> Callable[[ProviderKind, Credentials], ProviderPort]:
         def build(kind: ProviderKind, credentials: Credentials) -> ProviderPort:
-            self.secrets_used.append(credentials.secret)
-            return self.providers_by_secret.get(credentials.secret, self.provider)
+            self.secrets_used.append(_first_value(credentials))
+            return self.providers_by_secret.get(
+                _first_value(credentials), self.provider
+            )
 
         return build
+
+
+def _first_value(credentials: Credentials) -> str:
+    return credentials.get(credentials.names[0])

@@ -19,3 +19,11 @@ class NaiveTimestampError(DomainError):
 
 class CredentialsNotPersistableError(DomainError):
     """Credentials were asked to be copied, pickled or otherwise persisted."""
+
+
+class MissingCredentialError(DomainError):
+    """Credentials hold no value of the requested name, or no value at all."""
+
+
+class NotSingleCredentialError(DomainError):
+    """A single value was requested from credentials that hold several."""

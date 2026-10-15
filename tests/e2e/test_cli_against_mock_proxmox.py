@@ -155,10 +155,8 @@ def test_no_secret_is_written_to_the_configuration_file(
     assert TOKEN not in text
     assert SECRET_PART not in text
     assert "credential_reference" in text
-    assert (
-        cli_session.keyring.get_password("iac-node-forge", _reference_name(text))
-        == TOKEN
-    )
+    stored = cli_session.keyring.get_password("iac-node-forge", _reference_name(text))
+    assert json.loads(stored or "") == {"token": TOKEN}
 
 
 def test_cached_token_is_used_without_asking_again(

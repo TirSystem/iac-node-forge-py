@@ -43,6 +43,10 @@ class CredentialNotFoundError(CredentialStoreError):
     """The credential store holds no secret under the reference."""
 
 
+class CredentialEntryInvalidError(CredentialStoreError):
+    """The stored entry of a reference is not of the expected shape."""
+
+
 class EmptySecretError(CredentialStoreError):
     """The user gave an empty answer when asked for a secret."""
 

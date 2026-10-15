@@ -8,12 +8,12 @@ from iac_node_forge.domain.credentials import Credentials
 
 @runtime_checkable
 class CredentialStore(Protocol):
-    """Keeps secrets by reference."""
+    """Keeps the secret values of one credential reference."""
 
     def put(self, reference: CredentialReference, credentials: Credentials) -> None:
-        """Store a secret under a reference."""
+        """Store all values of the credentials under a reference, replacing any."""
         ...
 
     def get(self, reference: CredentialReference) -> Credentials:
-        """Return the secret kept under a reference."""
+        """Return all values kept under a reference."""
         ...

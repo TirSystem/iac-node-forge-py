@@ -152,7 +152,7 @@ class ProxmoxProvider:
 
     def _get(self, address: str, path: str, credentials: Credentials) -> _Json:
         url = _base_url(address) + API_PREFIX + path
-        headers = {"Authorization": f"PVEAPIToken={credentials.secret}"}
+        headers = {"Authorization": f"PVEAPIToken={credentials.get('token')}"}
         try:
             with httpx.Client(
                 verify=_tls_verify(self._verify), timeout=self._timeout

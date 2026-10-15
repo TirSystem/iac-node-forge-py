@@ -41,7 +41,7 @@ class FakeProvider:
         self._servers = servers
 
     def validate_access(self, address: str, credentials: Credentials) -> AccessResult:
-        if credentials.secret == self._accepted_secret:
+        if self._accepted_secret in credentials.values.values():
             return AccessResult(succeeded=True)
         return AccessResult(succeeded=False, reason="credentials rejected")
 
@@ -120,7 +120,7 @@ class FakeCredentialPrompt:
 
     def ask(self, provider_kind: ProviderKind) -> Credentials:
         self.asked.append(provider_kind)
-        return Credentials(self.secret)
+        return Credentials({n: self.secret for n in provider_kind.credential_names})
 
 
 class FailingProvider(FakeProvider):

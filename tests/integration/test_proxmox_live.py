@@ -81,14 +81,14 @@ def live() -> LiveServer:
         ConfigurationId("live"), ProviderKind.PROXMOX_VE, "Live Proxmox VE", address
     )
     provider = ProxmoxProvider(
-        Credentials(token), verify=_verify_from_environment(), timeout=15.0
+        Credentials.single(token), verify=_verify_from_environment(), timeout=15.0
     )
     return LiveServer(provider, configuration, token)
 
 
 def test_validate_access_succeeds_with_token(live: LiveServer) -> None:
     result = live.provider.validate_access(
-        live.configuration.address, Credentials(live.token)
+        live.configuration.address, Credentials.single(live.token)
     )
 
     assert result.succeeded, "access check failed; see the reason of the result"
@@ -99,7 +99,7 @@ def test_validate_access_fails_for_wrong_token_without_raising(
     live: LiveServer,
 ) -> None:
     result = live.provider.validate_access(
-        live.configuration.address, Credentials(live.wrong_token)
+        live.configuration.address, Credentials.single(live.wrong_token)
     )
 
     assert not result.succeeded
@@ -153,7 +153,7 @@ def test_get_server_raises_not_found_for_absent_identifier(live: LiveServer) -> 
 
 def test_error_text_does_not_contain_token_secret(live: LiveServer) -> None:
     wrong = ProxmoxProvider(
-        Credentials(live.wrong_token),
+        Credentials.single(live.wrong_token),
         verify=_verify_from_environment(),
         timeout=15.0,
     )

@@ -113,7 +113,10 @@ def test_provider_add_caches_the_token_when_asked() -> None:
     assert "platform credential store" in result.out
     (saved,) = harness.configurations.load_all()
     assert saved.credential_reference is not None
-    assert harness.credential_store.get(saved.credential_reference).secret == SECRET
+    assert (
+        harness.credential_store.get(saved.credential_reference).single_value()
+        == SECRET
+    )
     assert SECRET not in result.out + result.err
 
 
@@ -209,7 +212,7 @@ def test_servers_show_the_others_when_one_provider_is_unreachable() -> None:
         reference = CredentialReference(
             f"{configuration.display_name}-token", "keyring"
         )
-        harness.credential_store.put(reference, Credentials(secret))
+        harness.credential_store.put(reference, Credentials.single(secret))
         harness.configurations.save(
             replace(configuration, credential_reference=reference)
         )
@@ -288,7 +291,7 @@ def test_stored_credential_is_used_without_asking() -> None:
     harness.configurations.save(
         ProviderConfiguration(LAB_ID, LAB.provider_kind, "Lab", LAB.address, reference)
     )
-    harness.credential_store.put(reference, Credentials("stored-secret"))
+    harness.credential_store.put(reference, Credentials.single("stored-secret"))
 
     result = harness.run("servers")
 
