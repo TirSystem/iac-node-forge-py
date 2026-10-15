@@ -251,3 +251,49 @@ pytest -m integration -k contabo -v
 
 The values must never be committed or written to a file in the repository, and
 the tests never print them. See the wiki guide `Contabo-Live-Test`.
+
+## Power control live test (turns a server off and on)
+
+WARNING: `tests/integration/test_power_live.py` really shuts down, starts and
+restarts one server. Use only a DISPOSABLE server, never one that serves
+anything. The test puts the server back into its original power state when it
+ends, also when an assertion fails, but a failure of the provider can leave it
+off. Nothing else is changed: no server is created, deleted, reinstalled or
+snapshotted. The hard power off (`stop`) can lose unsaved data and runs only
+when `POWER_TEST_ALLOW_HARD_STOP=1` is set as well.
+
+Each provider is opted in on its own. Nothing runs unless every variable of
+that provider is set; the skip reason names the missing ones, never a value.
+
+| Variable | Meaning |
+| --- | --- |
+| `PVE_TOKEN`, `PVE_ADDRESS`, `PVE_VERIFY` | as in the Proxmox VE live test |
+| `PVE_POWER_TEST_SERVER` | the vmid of the disposable server |
+| `PVE_POWER_TEST_CONFIRM` | exactly `turn-off-server-<vmid>` |
+| the four `CONTABO_` variables, `CONTABO_API_URL` | as in the Contabo live test |
+| `CONTABO_POWER_TEST_SERVER` | the instance id of the disposable server |
+| `CONTABO_POWER_TEST_CONFIRM` | exactly `turn-off-server-<instance id>` |
+| `POWER_TEST_ALLOW_HARD_STOP` | `1` to also run the hard power off test |
+
+bash (Proxmox VE):
+
+```bash
+read -rsp 'PVE token: ' PVE_TOKEN && export PVE_TOKEN
+export PVE_POWER_TEST_SERVER='<vmid>' PVE_POWER_TEST_CONFIRM='turn-off-server-<vmid>'
+pytest -m integration -k "power and proxmox" -v
+```
+
+PowerShell (Proxmox VE):
+
+```powershell
+$env:PVE_TOKEN = Read-Host 'PVE token' -AsSecureString | ConvertFrom-SecureString -AsPlainText
+$env:PVE_POWER_TEST_SERVER = '<vmid>'
+$env:PVE_POWER_TEST_CONFIRM = 'turn-off-server-<vmid>'
+pytest -m integration -k "power and proxmox" -v
+```
+
+For Contabo, set the four `CONTABO_` variables as in the section above (silent
+input for the client secret and the API password), then
+`CONTABO_POWER_TEST_SERVER` and `CONTABO_POWER_TEST_CONFIRM`, and run
+`pytest -m integration -k "power and contabo" -v`. See the wiki guide
+`Power-Control-Live-Test`.
