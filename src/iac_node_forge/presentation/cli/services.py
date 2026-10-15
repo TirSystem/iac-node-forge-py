@@ -1,0 +1,31 @@
+"""The ports and streams a command needs, handed over by the composition root."""
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import TextIO
+
+from iac_node_forge.application.ports import (
+    ConfigurationStore,
+    CredentialPrompt,
+    CredentialStore,
+    ProviderPort,
+)
+from iac_node_forge.domain.credentials import Credentials
+from iac_node_forge.domain.provider_kind import ProviderKind
+
+type ProviderFactory = Callable[[ProviderKind, Credentials], ProviderPort]
+"""Builds the provider port of a kind for credentials; raises
+UnsupportedProviderError when no adapter exists for the kind."""
+
+
+@dataclass(frozen=True, slots=True)
+class CliServices:
+    """Everything a command uses; fakes of it make a command testable."""
+
+    configurations: ConfigurationStore
+    credential_store: CredentialStore
+    credential_prompt: CredentialPrompt
+    provider_factory: ProviderFactory
+    read_line: Callable[[str], str]
+    stdout: TextIO
+    stderr: TextIO

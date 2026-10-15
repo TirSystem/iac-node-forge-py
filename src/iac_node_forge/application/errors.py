@@ -45,3 +45,31 @@ class CredentialNotFoundError(CredentialStoreError):
 
 class EmptySecretError(CredentialStoreError):
     """The user gave an empty answer when asked for a secret."""
+
+
+class UnsupportedProviderError(ProviderError):
+    """No adapter for the provider is available in this client yet."""
+
+
+class UseCaseError(Exception):
+    """Base class of the errors a use case raises for a failed precondition."""
+
+
+class AccessNotValidatedError(UseCaseError):
+    """The configuration was not preceded by a successful access check."""
+
+
+class DuplicateDisplayNameError(UseCaseError):
+    """A provider configuration with this display name already exists."""
+
+
+class ConfigurationNotFoundError(UseCaseError):
+    """No provider configuration matches the given identifier or name."""
+
+
+class AmbiguousConfigurationError(UseCaseError):
+    """More than one provider configuration matches the given name."""
+
+
+class NoConfigurationError(UseCaseError):
+    """No provider is configured yet."""

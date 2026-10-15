@@ -13,6 +13,9 @@ dependencies = [
     "keyring>=25.0",
 ]
 
+[project.scripts]
+iac-node-forge = "iac_node_forge.presentation.cli.main:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3",
@@ -63,6 +66,25 @@ type = "forbidden"
 source_modules = ["iac_node_forge.domain"]
 forbidden_modules = [
     "iac_node_forge.application",
+    "iac_node_forge.infrastructure",
+    "iac_node_forge.presentation",
+]
+
+[[tool.importlinter.contracts]]
+name = "Presentation names infrastructure only in the composition root"
+type = "forbidden"
+source_modules = ["iac_node_forge.presentation"]
+forbidden_modules = ["iac_node_forge.infrastructure"]
+ignore_imports = [
+    "iac_node_forge.presentation.cli.composition -> iac_node_forge.infrastructure.*",
+]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "Application imports no outer layer"
+type = "forbidden"
+source_modules = ["iac_node_forge.application"]
+forbidden_modules = [
     "iac_node_forge.infrastructure",
     "iac_node_forge.presentation",
 ]
