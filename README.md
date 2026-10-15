@@ -154,3 +154,43 @@ in CI or on a shared host.
 
 The token must never be committed or written to a file in the repository. The
 tests never print it and only issue read requests.
+
+## Integration tests against a real Contabo account
+
+The tests in `tests/integration/test_contabo_live.py` run the Contabo adapter
+against your real Contabo account. They only read (one token request, then GET
+requests) and cost nothing: no instance is created, changed, started, stopped,
+reinstalled or cancelled. They are marked `integration`, are deselected by a
+plain `pytest`, and are skipped unless all four required variables are set.
+
+| Variable | Meaning |
+| --- | --- |
+| `CONTABO_CLIENT_ID` | OAuth2 client id |
+| `CONTABO_CLIENT_SECRET` | OAuth2 client secret |
+| `CONTABO_API_USER` | API user (the account e-mail address) |
+| `CONTABO_API_PASSWORD` | API password |
+| `CONTABO_API_URL` | optional; defaults to `https://api.contabo.com` |
+
+Set the values without echoing them, then run the tests.
+
+bash:
+
+```bash
+read -rsp 'Client secret: ' CONTABO_CLIENT_SECRET && export CONTABO_CLIENT_SECRET
+read -rsp 'API password: ' CONTABO_API_PASSWORD && export CONTABO_API_PASSWORD
+export CONTABO_CLIENT_ID='<client id>' CONTABO_API_USER='<api user>'
+pytest -m integration -k contabo -v
+```
+
+PowerShell:
+
+```powershell
+$env:CONTABO_CLIENT_ID = '<client id>'
+$env:CONTABO_API_USER = '<api user>'
+$env:CONTABO_CLIENT_SECRET = Read-Host 'Client secret' -AsSecureString | ConvertFrom-SecureString -AsPlainText
+$env:CONTABO_API_PASSWORD = Read-Host 'API password' -AsSecureString | ConvertFrom-SecureString -AsPlainText
+pytest -m integration -k contabo -v
+```
+
+The values must never be committed or written to a file in the repository, and
+the tests never print them. See the wiki guide `Contabo-Live-Test`.
