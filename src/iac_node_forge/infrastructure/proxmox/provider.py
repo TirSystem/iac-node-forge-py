@@ -6,7 +6,6 @@ sent as ``Authorization: PVEAPIToken=<secret>``. Ticket login
 (``POST /access/ticket``) is out of scope. Only HTTP GET is ever issued.
 """
 
-import ssl
 from collections.abc import Mapping
 from typing import Any
 
@@ -16,7 +15,6 @@ from iac_node_forge.application import capabilities
 from iac_node_forge.application.errors import (
     ProviderAuthenticationError,
     ProviderError,
-    ProviderUnreachableError,
     ServerNotFoundError,
     UnknownOptionKindError,
 )
@@ -26,6 +24,7 @@ from iac_node_forge.domain.credentials import Credentials
 from iac_node_forge.domain.provider_configuration import ProviderConfiguration
 from iac_node_forge.domain.server import Server
 from iac_node_forge.domain.server_option import ServerOption
+from iac_node_forge.infrastructure import _http
 
 API_PREFIX = "/api2/json"
 OPTION_KIND_NODE = "node"
@@ -151,22 +150,15 @@ class ProxmoxProvider:
         return self._get(address, path, self._credentials)
 
     def _get(self, address: str, path: str, credentials: Credentials) -> _Json:
-        url = _base_url(address) + API_PREFIX + path
+        url = _http.base_url(address) + API_PREFIX + path
         headers = {"Authorization": f"PVEAPIToken={credentials.get('token')}"}
         try:
             with httpx.Client(
-                verify=_tls_verify(self._verify), timeout=self._timeout
+                verify=_http.tls_verify(self._verify), timeout=self._timeout
             ) as client:
                 response = client.get(url, headers=headers)
-        except httpx.TimeoutException as error:
-            raise ProviderUnreachableError(
-                f"the provider did not answer within {self._timeout} seconds"
-            ) from error
         except httpx.TransportError as error:
-            raise ProviderUnreachableError(
-                f"the provider could not be reached ({type(error).__name__}); "
-                "check the address and the TLS certificate"
-            ) from error
+            raise _http.unreachable_error(error, self._timeout) from error
         return _payload(response)
 
 
@@ -185,17 +177,6 @@ def _payload(response: httpx.Response) -> _Json:
     if not isinstance(body, Mapping) or "data" not in body:
         raise ProviderError("the provider answer has no data member")
     return body["data"]
-
-
-def _base_url(address: str) -> str:
-    text = address.strip().rstrip("/")
-    return text if "://" in text else f"https://{text}"
-
-
-def _tls_verify(verify: bool | str) -> ssl.SSLContext | bool:
-    if isinstance(verify, str):
-        return ssl.create_default_context(cafile=verify)
-    return verify
 
 
 def _as_list(data: _Json) -> list[_Json]:
