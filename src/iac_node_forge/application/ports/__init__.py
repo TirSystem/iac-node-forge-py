@@ -4,10 +4,12 @@ from iac_node_forge.application.ports.configuration_store import ConfigurationSt
 from iac_node_forge.application.ports.credential_prompt import CredentialPrompt
 from iac_node_forge.application.ports.credential_store import CredentialStore
 from iac_node_forge.application.ports.provider_port import ProviderPort
+from iac_node_forge.application.ports.provider_resolver import ProviderResolver
 
 __all__ = [
     "ConfigurationStore",
     "CredentialPrompt",
     "CredentialStore",
     "ProviderPort",
+    "ProviderResolver",
 ]

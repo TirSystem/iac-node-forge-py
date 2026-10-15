@@ -12,6 +12,7 @@ from typing import Any
 
 import httpx
 
+from iac_node_forge.application import capabilities
 from iac_node_forge.application.errors import (
     ProviderAuthenticationError,
     ProviderError,
@@ -29,9 +30,9 @@ from iac_node_forge.domain.server_option import ServerOption
 API_PREFIX = "/api2/json"
 OPTION_KIND_NODE = "node"
 OPTION_KIND_STORAGE = "storage"
-CAPABILITY_LIST_SERVERS = "list_servers"
-CAPABILITY_LIST_SERVER_OPTIONS = "list_server_options"
-CAPABILITY_INSPECT_SERVER = "inspect_server"
+CAPABILITY_LIST_SERVERS = capabilities.LIST_SERVERS
+CAPABILITY_LIST_SERVER_OPTIONS = capabilities.LIST_SERVER_OPTIONS
+CAPABILITY_INSPECT_SERVER = capabilities.INSPECT_SERVER
 DEFAULT_TIMEOUT_SECONDS = 10.0
 _BYTES_PER_MIB = 1024 * 1024
 _UNKNOWN_STATE = "unknown"

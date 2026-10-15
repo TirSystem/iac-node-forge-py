@@ -1,6 +1,12 @@
 """In-memory fakes of the application ports, for tests."""
 
-from iac_node_forge.application.errors import ServerNotFoundError
+from iac_node_forge.application.errors import (
+    CredentialNotFoundError,
+    CredentialStoreUnavailableError,
+    ProviderError,
+    ServerNotFoundError,
+)
+from iac_node_forge.application.ports import ProviderPort
 from iac_node_forge.domain.access_result import AccessResult
 from iac_node_forge.domain.capability import Capability
 from iac_node_forge.domain.credential_reference import CredentialReference
@@ -62,7 +68,7 @@ class FakeConfigurationStore:
 
     def __init__(self, managed: tuple[ManagedServerRecord, ...] = ()) -> None:
         self._configurations: dict[ConfigurationId, ProviderConfiguration] = {}
-        self._managed = managed
+        self.managed = managed
 
     def save(self, configuration: ProviderConfiguration) -> None:
         self._configurations[configuration.configuration_id] = configuration
@@ -73,29 +79,82 @@ class FakeConfigurationStore:
     def managed_servers(
         self, configuration_id: ConfigurationId
     ) -> tuple[ManagedServerRecord, ...]:
-        return tuple(r for r in self._managed if r.configuration_id == configuration_id)
+        return tuple(r for r in self.managed if r.configuration_id == configuration_id)
 
 
 class FakeCredentialStore:
-    """Fake CredentialStore keeping secrets in memory."""
+    """Fake CredentialStore keeping secrets in memory.
 
-    def __init__(self) -> None:
-        self._secrets: dict[CredentialReference, Credentials] = {}
+    With ``unavailable`` set it behaves like a host without a keyring.
+    """
+
+    def __init__(self, unavailable: bool = False) -> None:
+        self.secrets: dict[CredentialReference, Credentials] = {}
+        self.unavailable = unavailable
 
     def put(self, reference: CredentialReference, credentials: Credentials) -> None:
-        self._secrets[reference] = credentials
+        if self.unavailable:
+            raise CredentialStoreUnavailableError("no keyring")
+        self.secrets[reference] = credentials
 
     def get(self, reference: CredentialReference) -> Credentials:
-        return self._secrets[reference]
+        if self.unavailable:
+            raise CredentialStoreUnavailableError("no keyring")
+        if reference not in self.secrets:
+            raise CredentialNotFoundError(reference.name)
+        return self.secrets[reference]
 
 
 class FakeCredentialPrompt:
     """Fake CredentialPrompt answering with a preset secret."""
 
     def __init__(self, secret: str = "secret") -> None:
-        self._secret = secret
+        self.secret = secret
         self.asked: list[ProviderKind] = []
 
     def ask(self, provider_kind: ProviderKind) -> Credentials:
         self.asked.append(provider_kind)
-        return Credentials(self._secret)
+        return Credentials(self.secret)
+
+
+class FailingProvider(FakeProvider):
+    """A provider whose read operations raise the given error."""
+
+    def __init__(self, error: ProviderError) -> None:
+        super().__init__()
+        self._error = error
+
+    def discover_capabilities(
+        self, configuration: ProviderConfiguration
+    ) -> frozenset[Capability]:
+        raise self._error
+
+    def list_server_options(
+        self, configuration: ProviderConfiguration, option_kind: str
+    ) -> tuple[ServerOption, ...]:
+        raise self._error
+
+    def list_servers(self, configuration: ProviderConfiguration) -> tuple[Server, ...]:
+        raise self._error
+
+    def get_server(
+        self, configuration: ProviderConfiguration, server_identifier: str
+    ) -> Server:
+        raise self._error
+
+
+class FakeProviderResolver:
+    """Fake ProviderResolver: one provider per configuration id, or one for all."""
+
+    def __init__(
+        self,
+        default: ProviderPort,
+        by_configuration: dict[ConfigurationId, ProviderPort] | None = None,
+    ) -> None:
+        self._default = default
+        self._by_configuration = by_configuration or {}
+        self.resolved: list[ConfigurationId] = []
+
+    def provider_for(self, configuration: ProviderConfiguration) -> ProviderPort:
+        self.resolved.append(configuration.configuration_id)
+        return self._by_configuration.get(configuration.configuration_id, self._default)
