@@ -1,7 +1,6 @@
 # Purpose:  check every change of the Python client: format, lint, types,
 #           layer contracts and the unit and contract tests (MIL-002 task 12).
-# Triggers: a push to main or to the branch ci-workflow, and a pull request
-#           to main; and by hand. Integration tests (a real Proxmox VE) never run
+# Triggers: a push to main and a pull request to main; and by hand. Integration tests (a real Proxmox VE) never run
 #           here: they are deselected by default and need PVE_TOKEN.
 # Inputs:   none. Python version is set once in the env block below.
 # Secrets:  none. The default token is read-only (contents: read).
@@ -16,7 +15,6 @@ on:
   push:
     branches:
       - main
-      - ci-workflow
   pull_request:
     branches:
       - main
