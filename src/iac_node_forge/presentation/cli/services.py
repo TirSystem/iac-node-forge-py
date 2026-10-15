@@ -1,13 +1,16 @@
 """The ports and streams a command needs, handed over by the composition root."""
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TextIO
 
 from iac_node_forge.application.ports import (
     ConfigurationStore,
     CredentialPrompt,
     CredentialStore,
+    OperationStore,
     ProviderPort,
 )
 from iac_node_forge.domain.credentials import Credentials
@@ -18,14 +21,28 @@ type ProviderFactory = Callable[[ProviderKind, Credentials], ProviderPort]
 UnsupportedProviderError when no adapter exists for the kind."""
 
 
+def utc_now() -> datetime:
+    """Return the current time in UTC."""
+    return datetime.now(UTC)
+
+
 @dataclass(frozen=True, slots=True)
 class CliServices:
-    """Everything a command uses; fakes of it make a command testable."""
+    """Everything a command uses; fakes of it make a command testable.
+
+    ``is_interactive`` is true when standard input is a terminal; only then may
+    a command ask a yes/no question. ``clock`` and ``sleep`` are what polling an
+    operation uses, so a test needs no real waiting.
+    """
 
     configurations: ConfigurationStore
+    operations: OperationStore
     credential_store: CredentialStore
     credential_prompt: CredentialPrompt
     provider_factory: ProviderFactory
     read_line: Callable[[str], str]
     stdout: TextIO
     stderr: TextIO
+    is_interactive: bool = False
+    clock: Callable[[], datetime] = utc_now
+    sleep: Callable[[float], None] = time.sleep

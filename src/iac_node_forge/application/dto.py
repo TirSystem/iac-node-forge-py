@@ -1,8 +1,11 @@
 """Plain results the use cases hand to presentation."""
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 
+from iac_node_forge.domain.operation import Operation, OperationState
+from iac_node_forge.domain.power_action import PowerAction
 from iac_node_forge.domain.provider_configuration import ConfigurationId
 from iac_node_forge.domain.provider_kind import ProviderKind
 
@@ -96,3 +99,85 @@ class ServerListing:
 
     servers: tuple[ServerSummary, ...]
     failures: tuple[ProviderFailure, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class Confirmation:
+    """What the user confirmed for one power action.
+
+    ``given`` is the yes to the stated action. ``typed_identifier`` is the
+    server identifier the user retyped; it is required only for a server this
+    client does not manage.
+    """
+
+    given: bool
+    typed_identifier: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OperationSummary:
+    """A recorded operation as presentation sees it; it holds no secret."""
+
+    operation_id: str
+    configuration_id: ConfigurationId
+    server_identifier: str
+    action: PowerAction
+    state: OperationState
+    started_at: datetime
+    finished_at: datetime | None
+    provider_reference: str | None
+    detail: str | None
+
+    @classmethod
+    def of(cls, operation: Operation) -> "OperationSummary":
+        """Return the summary of a domain operation."""
+        return cls(
+            operation.operation_id,
+            operation.configuration_id,
+            operation.server_identifier,
+            operation.action,
+            operation.state,
+            operation.started_at,
+            operation.finished_at,
+            operation.provider_reference,
+            operation.detail,
+        )
+
+
+class PowerOutcome(Enum):
+    """How a power request ended, for the message the client shows.
+
+    Only REQUESTED and REJECTED created an operation record; READY is the
+    answer of a preview and means every precondition but the confirmation
+    holds. In every other outcome no request was sent.
+    """
+
+    READY = "ready"
+    REQUESTED = "requested"
+    REJECTED = "rejected"
+    UNSUPPORTED = "unsupported"
+    NOT_FOUND = "not_found"
+    ALREADY_IN_STATE = "already_in_state"
+    NOT_CONFIRMED = "not_confirmed"
+    IDENTIFIER_MISMATCH = "identifier_mismatch"
+
+
+@dataclass(frozen=True, slots=True)
+class PowerActionResult:
+    """The answer to a power request or to its preview.
+
+    ``reason`` says why no request was sent, or why the provider rejected it;
+    ``operation`` is set for REQUESTED and REJECTED. ``server_name``,
+    ``server_state`` and ``managed`` describe the server when it was found.
+    """
+
+    outcome: PowerOutcome
+    configuration_id: ConfigurationId
+    provider_name: str
+    server_identifier: str
+    action: PowerAction
+    reason: str = ""
+    operation: OperationSummary | None = None
+    server_name: str | None = None
+    server_state: str | None = None
+    managed: bool = False

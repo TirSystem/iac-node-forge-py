@@ -10,9 +10,11 @@ from iac_node_forge.domain.provider_kind import ProviderKind
 from iac_node_forge.presentation.cli.main import main
 from iac_node_forge.presentation.cli.services import CliServices
 from tests.unit.application.fakes import (
+    FakeClock,
     FakeConfigurationStore,
     FakeCredentialPrompt,
     FakeCredentialStore,
+    FakeOperationStore,
     FakeProvider,
 )
 from tests.unit.application.samples import SECRET
@@ -37,25 +39,41 @@ class Harness:
     configurations: FakeConfigurationStore = field(
         default_factory=FakeConfigurationStore
     )
+    operations: FakeOperationStore = field(default_factory=FakeOperationStore)
+    clock: FakeClock = field(default_factory=FakeClock)
+    interactive: bool = False
     credential_store: FakeCredentialStore = field(default_factory=FakeCredentialStore)
     prompt: FakeCredentialPrompt = field(
         default_factory=lambda: FakeCredentialPrompt(SECRET)
     )
     providers_by_secret: dict[str, ProviderPort] = field(default_factory=dict)
     answers: Iterable[str] = ()
+    asked: list[str] = field(default_factory=list)
     secrets_used: list[str] = field(default_factory=list)
 
     def run(self, *argv: str) -> CliRun:
         out, err = io.StringIO(), io.StringIO()
         answers = iter(self.answers)
+
+        def read_line(prompt: str) -> str:
+            self.asked.append(prompt)
+            try:
+                return next(answers)
+            except StopIteration:
+                raise EOFError from None
+
         services = CliServices(
             configurations=self.configurations,
+            operations=self.operations,
             credential_store=self.credential_store,
             credential_prompt=self.prompt,
             provider_factory=self._factory,
-            read_line=lambda _prompt: next(answers),
+            read_line=read_line,
             stdout=out,
             stderr=err,
+            is_interactive=self.interactive,
+            clock=self.clock,
+            sleep=self.clock.sleep,
         )
         code = main(list(argv), services)
         return CliRun(code, out.getvalue(), err.getvalue())
