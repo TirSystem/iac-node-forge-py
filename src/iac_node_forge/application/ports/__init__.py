@@ -3,13 +3,17 @@
 from iac_node_forge.application.ports.configuration_store import ConfigurationStore
 from iac_node_forge.application.ports.credential_prompt import CredentialPrompt
 from iac_node_forge.application.ports.credential_store import CredentialStore
+from iac_node_forge.application.ports.operation_store import OperationStore
 from iac_node_forge.application.ports.provider_port import ProviderPort
 from iac_node_forge.application.ports.provider_resolver import ProviderResolver
+from iac_node_forge.application.ports.server_power_port import ServerPowerPort
 
 __all__ = [
     "ConfigurationStore",
     "CredentialPrompt",
     "CredentialStore",
+    "OperationStore",
     "ProviderPort",
     "ProviderResolver",
+    "ServerPowerPort",
 ]

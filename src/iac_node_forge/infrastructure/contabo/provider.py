@@ -1,14 +1,18 @@
-"""ProviderPort implementation for Contabo, read-only (ADR-0005).
+"""ProviderPort and ServerPowerPort implementation for Contabo (ADR-0005).
 
 The four credential values are exchanged for a bearer token with the OAuth2
 password grant. The token is kept only in memory, reused, and replaced once
-after a 401. Every API call is a GET and carries a fresh ``x-request-id``; the
-only other request is the token POST.
+after a 401. Every API call carries a fresh ``x-request-id``. Every API call
+is a GET except the four power POSTs of ``_POWER_ACTION_PATH``
+(``/actions/start``, ``shutdown``, ``stop`` and ``restart`` of one instance);
+the only other request is the token POST (ADR-0006).
 """
 
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import timedelta
+from types import MappingProxyType
 from typing import Any
 
 import httpx
@@ -27,11 +31,13 @@ from iac_node_forge.domain.access_result import AccessResult
 from iac_node_forge.domain.capability import Capability
 from iac_node_forge.domain.credentials import Credentials
 from iac_node_forge.domain.errors import MissingCredentialError
+from iac_node_forge.domain.operation import Operation, OperationState
+from iac_node_forge.domain.power_action import PowerAction
 from iac_node_forge.domain.provider_configuration import ProviderConfiguration
 from iac_node_forge.domain.provider_kind import ProviderKind
 from iac_node_forge.domain.server import Server
 from iac_node_forge.domain.server_option import ServerOption
-from iac_node_forge.infrastructure import _http
+from iac_node_forge.infrastructure import _http, _power
 
 DEFAULT_AUTH_URL = (
     "https://auth.contabo.com/auth/realms/contabo/protocol/openid-connect/token"
@@ -44,7 +50,35 @@ MAX_PAGES = 100
 INSTANCES_PATH = "/v1/compute/instances"
 DATA_CENTERS_PATH = "/v1/data-centers"
 IMAGES_PATH = "/v1/compute/images"
+DEFAULT_RESTART_SETTLE_SECONDS = 30.0
 _UNKNOWN = "unknown"
+_STATUS_RUNNING = "running"
+_STATUS_STOPPED = "stopped"
+_STATUS_ERROR = "error"
+_ACCEPTED_WRITE_STATUSES = frozenset({200, 201, 202})
+_RESTART_NOT_OBSERVED = (
+    "the instance is running after the settle time; the restart itself could "
+    "not be observed because Contabo reports no task"
+)
+
+# The only write requests this adapter can send, one path per power action.
+_POWER_ACTION_PATH: Mapping[PowerAction, str] = MappingProxyType(
+    {
+        PowerAction.START: "start",
+        PowerAction.SHUTDOWN: "shutdown",
+        PowerAction.STOP: "stop",
+        PowerAction.RESTART: "restart",
+    }
+)
+# The status an instance has when the action is done; RESTART has none that
+# differs from the starting status, so it is judged after the settle time.
+_TARGET_STATUS: Mapping[PowerAction, str] = MappingProxyType(
+    {
+        PowerAction.START: _STATUS_RUNNING,
+        PowerAction.SHUTDOWN: _STATUS_STOPPED,
+        PowerAction.STOP: _STATUS_STOPPED,
+    }
+)
 _STATUS_NOT_FOUND = 404
 _STATUS_RATE_LIMITED = 429
 _STATUS_SERVER_ERROR = 500
@@ -68,6 +102,9 @@ class ContaboProvider:
     API address of every call comes from the method arguments. ``auth_url`` is
     the token endpoint; a test may point it at a mock. ``verify`` is ``True``
     (system CAs), a CA bundle path, or an explicit ``False``.
+    ``restart_settle_seconds`` is how long after a RESTART request the
+    instance may be reported as restarted; ``clock`` gives the time stamped on
+    operations. Both are options so a test controls them.
     """
 
     def __init__(
@@ -76,12 +113,16 @@ class ContaboProvider:
         auth_url: str = DEFAULT_AUTH_URL,
         verify: bool | str = True,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        restart_settle_seconds: float = DEFAULT_RESTART_SETTLE_SECONDS,
+        clock: _power.Clock = _power.utc_now,
     ) -> None:
         _require_all_names(credentials)
         self._session = _TokenSession(credentials)
         self._auth_url = auth_url
         self._verify = verify
         self._timeout = timeout
+        self._restart_settle = timedelta(seconds=restart_settle_seconds)
+        self._clock = clock
 
     def __repr__(self) -> str:
         return (
@@ -109,13 +150,14 @@ class ContaboProvider:
     def discover_capabilities(
         self, configuration: ProviderConfiguration
     ) -> frozenset[Capability]:
-        """Return the read-only capabilities of this adapter."""
+        """Return the read capabilities and the four power capabilities."""
         return frozenset(
             Capability(name)
             for name in (
                 capabilities.LIST_SERVERS,
                 capabilities.LIST_SERVER_OPTIONS,
                 capabilities.INSPECT_SERVER,
+                *capabilities.POWER_ACTION_CAPABILITY.values(),
             )
         )
 
@@ -164,6 +206,80 @@ class ContaboProvider:
             raise ServerNotFoundError(f"No server {server_identifier!r} at Contabo")
         return _to_server(items[0])
 
+    def request_power(
+        self,
+        configuration: ProviderConfiguration,
+        server_identifier: str,
+        action: PowerAction,
+    ) -> Operation:
+        """POST one action of an instance; Contabo gives no task reference.
+
+        A provider failure (401 after renewal, 403, 429, 5xx, unreachable)
+        gives a FAILED operation. Raises ServerNotFoundError when the
+        identifier is not a number or the instance does not exist.
+        """
+        text = server_identifier.strip()
+        if not (text.isascii() and text.isdecimal()):
+            raise ServerNotFoundError(f"No server {server_identifier!r} at Contabo")
+        started_at = self._clock()
+        path = f"{INSTANCES_PATH}/{int(text)}/actions/{_POWER_ACTION_PATH[action]}"
+        try:
+            # Look the instance up first, so a write is never sent for an id
+            # that does not exist (the same guarantee as the Proxmox adapter).
+            self.get_server(configuration, server_identifier)
+            response = self._authorised_post(self._session, configuration.address, path)
+            if response.status_code == _STATUS_NOT_FOUND:
+                raise ServerNotFoundError(f"No server {server_identifier!r} at Contabo")
+            _body(response, _ACCEPTED_WRITE_STATUSES)
+        except ServerNotFoundError:
+            raise
+        except ProviderError as error:
+            return _power.failed_operation(
+                configuration, server_identifier, action, started_at, str(error)
+            )
+        return _power.running_operation(
+            configuration, server_identifier, action, started_at, None
+        )
+
+    def operation_state(
+        self, configuration: ProviderConfiguration, operation: Operation
+    ) -> Operation:
+        """Read the instance status once and judge it against the action.
+
+        START, SHUTDOWN and STOP succeed when the status equals the target;
+        ``error`` fails; any other status is still RUNNING. RESTART succeeds
+        only when asked at or after the settle time with status ``running``,
+        and its detail says the transition was not observed.
+        """
+        if operation.has_ended:
+            return operation
+        status = self.get_server(configuration, operation.server_identifier).state
+        if status == _STATUS_ERROR:
+            return _power.end_operation(
+                operation,
+                OperationState.FAILED,
+                self._clock,
+                f"the instance reported status {status!r}",
+            )
+        if operation.action is PowerAction.RESTART:
+            return self._judge_restart(operation, status)
+        if status == _TARGET_STATUS[operation.action]:
+            return _power.end_operation(
+                operation, OperationState.SUCCEEDED, self._clock, None
+            )
+        return operation
+
+    def _judge_restart(self, operation: Operation, status: str) -> Operation:
+        settled = self._clock() >= operation.started_at + self._restart_settle
+        if settled and status == _STATUS_RUNNING:
+            return _power.end_operation(
+                operation,
+                OperationState.SUCCEEDED,
+                self._clock,
+                _RESTART_NOT_OBSERVED,
+            )
+        return operation
+
     def _get_pages(self, address: str, path: str) -> list[Mapping[str, _Json]]:
         items: list[Mapping[str, _Json]] = []
         for page in range(1, MAX_PAGES + 1):
@@ -196,24 +312,51 @@ class ContaboProvider:
     ) -> httpx.Response:
         """GET with the session's token; renew it once after a 401."""
         url = _http.base_url(address) + path
+        return self._authorised(
+            session,
+            lambda client, headers: client.get(url, params=params, headers=headers),
+        )
+
+    def _authorised_post(
+        self, session: _TokenSession, address: str, path: str
+    ) -> httpx.Response:
+        """POST a power action with no body; renew the token once after a 401.
+
+        The action is documented without a request body, so only the JSON
+        content type is sent. A 401 means the request was not processed, so
+        repeating it once with the new token cannot act twice.
+        """
+        url = _http.base_url(address) + path
+        return self._authorised(
+            session,
+            lambda client, headers: client.post(
+                url, headers={**headers, "Content-Type": "application/json"}
+            ),
+        )
+
+    def _authorised(
+        self,
+        session: _TokenSession,
+        call: Callable[[httpx.Client, dict[str, str]], httpx.Response],
+    ) -> httpx.Response:
         if session.token is None:
             self._fetch_token(session)
-        response = self._send_get(url, params, session)
+        response = self._send_with_token(session, call)
         if response.status_code != 401:
             return response
         self._fetch_token(session)
-        return self._send_get(url, params, session)
+        return self._send_with_token(session, call)
 
-    def _send_get(
-        self, url: str, params: Mapping[str, int], session: _TokenSession
+    def _send_with_token(
+        self,
+        session: _TokenSession,
+        call: Callable[[httpx.Client, dict[str, str]], httpx.Response],
     ) -> httpx.Response:
         headers = {
             "Authorization": f"Bearer {session.token}",
             "x-request-id": str(uuid.uuid4()),
         }
-        return self._send(
-            lambda client: client.get(url, params=params, headers=headers)
-        )
+        return self._send(lambda client: call(client, headers))
 
     def _fetch_token(self, session: _TokenSession) -> None:
         credentials = session.credentials
@@ -251,7 +394,9 @@ def _require_all_names(credentials: Credentials) -> None:
         credentials.get(name)
 
 
-def _body(response: httpx.Response) -> Mapping[str, _Json]:
+def _body(
+    response: httpx.Response, accepted: frozenset[int] = frozenset({200})
+) -> Mapping[str, _Json]:
     status = response.status_code
     if status in (401, 403):
         raise ProviderAuthenticationError(
@@ -263,7 +408,7 @@ def _body(response: httpx.Response) -> Mapping[str, _Json]:
         )
     if status >= _STATUS_SERVER_ERROR:
         raise ProviderServiceError(f"Contabo answered {status}: service error")
-    if status != 200:
+    if status not in accepted:
         raise ProviderError(f"Contabo answered with status {status}")
     try:
         body = response.json()

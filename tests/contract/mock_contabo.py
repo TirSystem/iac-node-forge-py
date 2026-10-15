@@ -9,6 +9,7 @@ that only GET (and the token POST) was used.
 
 import json
 import math
+import re
 import secrets
 import threading
 import time
@@ -27,7 +28,18 @@ BAD_REQUEST = 400
 UNAUTHORIZED = 401
 NOT_FOUND = 404
 METHOD_NOT_ALLOWED = 405
+UNSUPPORTED_MEDIA_TYPE = 415
 DEFAULT_PAGE_SIZE = 10
+ACTIONS = frozenset({"start", "shutdown", "stop", "restart"})
+_ACTION_PATH = re.compile(
+    INSTANCES_PATH + r"/(?P<id>\d+)/actions/(?P<action>start|shutdown|stop|restart)"
+)
+_TARGET_AFTER = {
+    "start": "running",
+    "shutdown": "stopped",
+    "stop": "stopped",
+    "restart": "running",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +50,15 @@ class RecordedRequest:
     path: str
     query: str = ""
     request_id: str | None = None
+
+
+@dataclass(slots=True)
+class MockTransition:
+    """A status change the mock applies over the next reads of an instance."""
+
+    target: str
+    reads_left: int
+    interim_status: str | None
 
 
 @dataclass(slots=True)
@@ -61,6 +82,16 @@ class MockContaboState:
     reported_total_pages: int | None = None
     # An instance lookup answers 200 with an empty ``data`` array.
     empty_instance_data: bool = False
+    # Answers every allow-listed power action POST with this status.
+    power_forced_status: int | None = None
+    # Reads of an instance that still show the old (or interim) status after
+    # a power action, before the target status appears.
+    transition_reads: int = 2
+    # The status shown during those reads; None keeps the status as it was.
+    interim_status: str | None = None
+    # The transition ends in ``error`` instead of its target status.
+    transition_fails: bool = False
+    transitions: dict[str, "MockTransition"] = field(default_factory=dict)
     current_token: str | None = None
     tokens_issued: int = 0
     token_uses: int = 0
@@ -93,7 +124,14 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         state = self.server.state
         parts = urlsplit(self.path)
-        state.requests.append(RecordedRequest("POST", parts.path, parts.query))
+        request_id = self.headers.get("x-request-id")
+        state.requests.append(
+            RecordedRequest("POST", parts.path, parts.query, request_id)
+        )
+        action = _ACTION_PATH.fullmatch(parts.path)
+        if action is not None:
+            self._power_action(action, request_id, state)
+            return
         if parts.path != TOKEN_PATH:
             self._reply(METHOD_NOT_ALLOWED, {})
             return
@@ -131,6 +169,47 @@ class _Handler(BaseHTTPRequestHandler):
         parts = urlsplit(self.path)
         self.server.state.requests.append(RecordedRequest(method, parts.path))
         self._reply(METHOD_NOT_ALLOWED, {})
+
+    def _power_action(
+        self, match: re.Match[str], request_id: str | None, state: MockContaboState
+    ) -> None:
+        if state.delay_seconds:
+            time.sleep(state.delay_seconds)
+        content_type = self.headers.get("Content-Type", "")
+        if state.power_forced_status is not None:
+            self._reply(state.power_forced_status, {})
+        elif state.forced_status is not None:
+            self._reply(state.forced_status, {})
+        elif not self._bearer_accepted(state):
+            self._reply(UNAUTHORIZED, {"message": "invalid token"})
+        elif not _is_uuid4(request_id):
+            self._reply(BAD_REQUEST, {"message": "x-request-id must be a UUID4"})
+        elif content_type != "application/json":
+            self._reply(UNSUPPORTED_MEDIA_TYPE, {"message": "json expected"})
+        else:
+            self._apply_action(match["id"], match["action"], state)
+
+    def _apply_action(
+        self, identifier: str, action: str, state: MockContaboState
+    ) -> None:
+        found = [i for i in state.instances if str(i.get("instanceId")) == identifier]
+        if not found:
+            self._reply(NOT_FOUND, {"message": "instance not found"})
+            return
+        instance = found[0]
+        target = _TARGET_AFTER[action]
+        state.transitions[identifier] = MockTransition(
+            "error" if state.transition_fails else target,
+            state.transition_reads,
+            state.interim_status,
+        )
+        self._reply(
+            201,
+            {
+                "data": [{"instanceId": instance["instanceId"], "action": action}],
+                "_links": {"self": self.path},
+            },
+        )
 
     @staticmethod
     def _grant_accepted(form: dict[str, list[str]], state: MockContaboState) -> bool:
@@ -176,6 +255,8 @@ class _Handler(BaseHTTPRequestHandler):
             if str(item.get("instanceId")) == identifier
             and not state.empty_instance_data
         ]
+        for item in found:
+            _advance_transition(item, state)
         if state.empty_instance_data:
             self._reply(200, {"data": [], "_links": {"self": self.path}})
             return
@@ -224,6 +305,21 @@ class _Handler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002
         """Keep the test output quiet."""
+
+
+def _advance_transition(instance: dict[str, Any], state: MockContaboState) -> None:
+    """One read of an instance moves its pending transition one step."""
+    identifier = str(instance.get("instanceId"))
+    transition = state.transitions.get(identifier)
+    if transition is None:
+        return
+    if transition.reads_left > 0:
+        transition.reads_left -= 1
+        if transition.interim_status is not None:
+            instance["status"] = transition.interim_status
+        return
+    instance["status"] = transition.target
+    del state.transitions[identifier]
 
 
 def _is_uuid4(text: str | None) -> bool:
@@ -293,6 +389,13 @@ class MockContaboServer:
     def api_requests(self) -> list[RecordedRequest]:
         """The requests to API paths, without the token requests."""
         return [r for r in self.state.requests if r.path != TOKEN_PATH]
+
+    @property
+    def write_requests(self) -> list[RecordedRequest]:
+        """Every non-GET request except the token request, 405 ones included."""
+        return [
+            r for r in self.state.requests if r.method != "GET" and r.path != TOKEN_PATH
+        ]
 
     @property
     def token_requests(self) -> list[RecordedRequest]:

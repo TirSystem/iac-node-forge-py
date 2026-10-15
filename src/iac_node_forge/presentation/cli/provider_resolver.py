@@ -6,11 +6,13 @@ from iac_node_forge.application.errors import (
     CredentialEntryInvalidError,
     CredentialNotFoundError,
     CredentialStoreUnavailableError,
+    UnsupportedProviderError,
 )
 from iac_node_forge.application.ports import (
     CredentialPrompt,
     CredentialStore,
     ProviderPort,
+    ServerPowerPort,
 )
 from iac_node_forge.domain.credential_reference import CredentialReference
 from iac_node_forge.domain.credentials import Credentials
@@ -86,6 +88,20 @@ class CliProviderResolver:
                 configuration.provider_kind, credentials
             )
         return self._providers[key]
+
+    def power_for(self, configuration: ProviderConfiguration) -> ServerPowerPort:
+        """Return the power port of the configuration's adapter.
+
+        One adapter object serves both ports, so the credentials are asked for
+        once per run whichever port is asked first.
+        """
+        provider = self.provider_for(configuration)
+        if not isinstance(provider, ServerPowerPort):
+            raise UnsupportedProviderError(
+                f"no power actions for {configuration.provider_kind.value} "
+                "in this version of the client"
+            )
+        return provider
 
 
 def build_resolver(services: CliServices) -> CliProviderResolver:

@@ -1,19 +1,32 @@
 """In-memory fakes of the application ports, for tests."""
 
+import uuid
+from collections.abc import Callable, Iterable
+from datetime import UTC, datetime
+
 from iac_node_forge.application.errors import (
     CredentialEntryInvalidError,
     CredentialNotFoundError,
     CredentialStoreUnavailableError,
+    OperationNotFoundError,
+    PowerActionUnsupportedError,
     ProviderError,
     ServerNotFoundError,
     UnknownOptionKindError,
+    UnsupportedProviderError,
 )
-from iac_node_forge.application.ports import ProviderPort
+from iac_node_forge.application.ports import ProviderPort, ServerPowerPort
 from iac_node_forge.domain.access_result import AccessResult
 from iac_node_forge.domain.capability import Capability
 from iac_node_forge.domain.credential_reference import CredentialReference
 from iac_node_forge.domain.credentials import Credentials
 from iac_node_forge.domain.managed_server_record import ManagedServerRecord
+from iac_node_forge.domain.operation import (
+    Operation,
+    OperationId,
+    OperationState,
+)
+from iac_node_forge.domain.power_action import PowerAction
 from iac_node_forge.domain.provider_configuration import (
     ConfigurationId,
     ProviderConfiguration,
@@ -156,17 +169,134 @@ class FailingProvider(FakeProvider):
 
 
 class FakeProviderResolver:
-    """Fake ProviderResolver: one provider per configuration id, or one for all."""
+    """Fake ProviderResolver: one provider per configuration id, or one for all.
+
+    The power port is ``power`` (or ``power_by_configuration``) when given;
+    otherwise the provider itself when it also implements ServerPowerPort.
+    """
 
     def __init__(
         self,
         default: ProviderPort,
         by_configuration: dict[ConfigurationId, ProviderPort] | None = None,
+        power: ServerPowerPort | None = None,
+        power_by_configuration: dict[ConfigurationId, ServerPowerPort] | None = None,
     ) -> None:
         self._default = default
         self._by_configuration = by_configuration or {}
+        self._power = power
+        self._power_by_configuration = power_by_configuration or {}
         self.resolved: list[ConfigurationId] = []
+        self.power_resolved: list[ConfigurationId] = []
 
     def provider_for(self, configuration: ProviderConfiguration) -> ProviderPort:
         self.resolved.append(configuration.configuration_id)
         return self._by_configuration.get(configuration.configuration_id, self._default)
+
+    def power_for(self, configuration: ProviderConfiguration) -> ServerPowerPort:
+        self.power_resolved.append(configuration.configuration_id)
+        key = configuration.configuration_id
+        if key in self._power_by_configuration:
+            return self._power_by_configuration[key]
+        if self._power is not None:
+            return self._power
+        provider = self._by_configuration.get(key, self._default)
+        if isinstance(provider, ServerPowerPort):
+            return provider
+        raise UnsupportedProviderError("the fake provider has no power actions")
+
+
+class FakePowerProvider:
+    """Fake ServerPowerPort with scripted behaviour and a record of requests.
+
+    A request returns a RUNNING operation; each ``operation_state`` call is one
+    step, and the operation ends after ``steps_to_finish`` steps. Call
+    ``reject_with`` to make requests fail, ``make_operations_fail`` to make
+    operations end FAILED. Every accepted request is in ``requests``.
+    """
+
+    def __init__(
+        self,
+        servers: Iterable[str] = ("100", "101"),
+        supported: frozenset[PowerAction] = frozenset(PowerAction),
+        steps_to_finish: int = 2,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
+        self._servers = frozenset(servers)
+        self._supported = supported
+        self._steps_to_finish = steps_to_finish
+        self._clock = clock
+        self._rejection: ProviderError | None = None
+        self._operations_fail = False
+        self._steps: dict[OperationId, int] = {}
+        self.requests: list[tuple[str, PowerAction]] = []
+
+    def reject_with(self, error: ProviderError) -> None:
+        self._rejection = error
+
+    def make_operations_fail(self) -> None:
+        self._operations_fail = True
+
+    def request_power(
+        self,
+        configuration: ProviderConfiguration,
+        server_identifier: str,
+        action: PowerAction,
+    ) -> Operation:
+        if action not in self._supported:
+            raise PowerActionUnsupportedError(f"{action.value} is not supported")
+        if server_identifier not in self._servers:
+            raise ServerNotFoundError(server_identifier)
+        started_at = self._clock()
+        rejected = self._rejection is not None
+        operation = Operation(
+            operation_id=OperationId(uuid.uuid4().hex),
+            configuration_id=configuration.configuration_id,
+            server_identifier=server_identifier,
+            action=action,
+            state=OperationState.RUNNING,
+            started_at=started_at,
+            provider_reference=None
+            if rejected
+            else f"fake-task-{len(self.requests) + 1}",
+        )
+        if self._rejection is not None:
+            return operation.ended(
+                OperationState.FAILED, started_at, str(self._rejection)
+            )
+        self.requests.append((server_identifier, action))
+        self._steps[operation.operation_id] = 0
+        return operation
+
+    def operation_state(
+        self, configuration: ProviderConfiguration, operation: Operation
+    ) -> Operation:
+        if operation.has_ended:
+            return operation
+        steps = self._steps.get(operation.operation_id, 0) + 1
+        self._steps[operation.operation_id] = steps
+        if steps < self._steps_to_finish:
+            return operation
+        finished_at = max(self._clock(), operation.started_at)
+        if self._operations_fail:
+            return operation.ended(
+                OperationState.FAILED, finished_at, "the fake task failed"
+            )
+        return operation.ended(OperationState.SUCCEEDED, finished_at, None)
+
+
+class FakeOperationStore:
+    """Fake OperationStore keeping operations in memory."""
+
+    def __init__(self) -> None:
+        self.operations: dict[OperationId, Operation] = {}
+        self.saved: list[Operation] = []
+
+    def save(self, operation: Operation) -> None:
+        self.operations[operation.operation_id] = operation
+        self.saved.append(operation)
+
+    def load(self, operation_id: OperationId) -> Operation:
+        if operation_id not in self.operations:
+            raise OperationNotFoundError(operation_id)
+        return self.operations[operation_id]

@@ -390,8 +390,10 @@ def test_requests_hit_the_documented_paths(
 def test_adapter_source_has_no_write_request() -> None:
     source = inspect.getsource(contabo_module)
 
-    assert source.count(".post(") == 1
+    # The token request and the one power POST (``_authorised_post``) only.
+    assert source.count(".post(") == 2
     assert ".post(self._auth_url" in source
+    assert source.count("_authorised_post(") == 2  # its definition and one use
     for write_call in (".put(", ".patch(", ".delete(", ".request("):
         assert write_call not in source
 

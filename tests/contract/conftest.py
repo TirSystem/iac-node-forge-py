@@ -4,8 +4,11 @@ from collections.abc import Iterator
 
 import pytest
 
+from iac_node_forge.application.capabilities import POWER_CAPABILITIES
+from iac_node_forge.application.errors import ProviderAuthenticationError
 from iac_node_forge.domain.capability import Capability
 from iac_node_forge.domain.credentials import Credentials
+from iac_node_forge.domain.power_action import PowerAction
 from iac_node_forge.domain.provider_configuration import (
     ConfigurationId,
     ProviderConfiguration,
@@ -18,7 +21,7 @@ from iac_node_forge.infrastructure.proxmox import ProxmoxProvider
 from tests.contract.mock_contabo import MockContaboServer
 from tests.contract.mock_proxmox import MockProxmoxServer
 from tests.contract.provider_under_test import ProviderUnderTest
-from tests.unit.application.fakes import FakeProvider
+from tests.unit.application.fakes import FakePowerProvider, FakeProvider
 
 TOKEN = "root@pam!forge=11111111-2222-3333-4444-555555555555"
 WRONG_TOKEN = "root@pam!forge=99999999-9999-9999-9999-999999999999"
@@ -62,6 +65,25 @@ READ_ONLY_CAPABILITIES = frozenset(
     Capability(name)
     for name in ("list_servers", "list_server_options", "inspect_server")
 )
+POWER_ONLY_CAPABILITIES = frozenset(Capability(name) for name in POWER_CAPABILITIES)
+ALL_CAPABILITIES = READ_ONLY_CAPABILITIES | POWER_ONLY_CAPABILITIES
+PROXMOX_VERBS = {
+    PowerAction.START: "start",
+    PowerAction.SHUTDOWN: "shutdown",
+    PowerAction.STOP: "stop",
+    PowerAction.RESTART: "reboot",
+}
+PROXMOX_PLACES = {"100": ("pve1", "qemu"), "101": ("pve2", "lxc")}
+CONTABO_ALLOWED_WRITES = frozenset(
+    ("POST", f"/v1/compute/instances/{server}/actions/{verb}")
+    for server in ("100", "101")
+    for verb in ("start", "shutdown", "stop", "restart")
+)
+PROXMOX_ALLOWED_WRITES = frozenset(
+    ("POST", f"/api2/json/nodes/{node}/{kind}/{server}/status/{verb}")
+    for server, (node, kind) in PROXMOX_PLACES.items()
+    for verb in PROXMOX_VERBS.values()
+)
 
 
 def configuration_for(
@@ -86,6 +108,7 @@ def mock_proxmox() -> Iterator[MockProxmoxServer]:
         state.resources = [
             {
                 "id": "qemu/100",
+                "node": "pve1",
                 "type": "qemu",
                 "vmid": 100,
                 "name": "web",
@@ -95,6 +118,7 @@ def mock_proxmox() -> Iterator[MockProxmoxServer]:
             },
             {
                 "id": "lxc/101",
+                "node": "pve2",
                 "type": "lxc",
                 "vmid": 101,
                 "name": "db",
@@ -159,9 +183,10 @@ def contabo_provider(mock_contabo: MockContaboServer) -> ContaboProvider:
 
 
 def _fake_variant() -> ProviderUnderTest:
+    power = FakePowerProvider()
     provider = FakeProvider(
         accepted_secret=TOKEN,
-        capabilities=READ_ONLY_CAPABILITIES,
+        capabilities=ALL_CAPABILITIES,
         options=EXPECTED_NODES + EXPECTED_STORAGE,
         servers=EXPECTED_SERVERS,
     )
@@ -174,13 +199,27 @@ def _fake_variant() -> ProviderUnderTest:
         expected_servers=EXPECTED_SERVERS,
         expected_options={"node": EXPECTED_NODES, "storage": EXPECTED_STORAGE},
         secret_values=(TOKEN, WRONG_TOKEN),
+        power=power,
+        reject_power_requests=lambda: power.reject_with(
+            ProviderAuthenticationError("the fake provider answered 403")
+        ),
+        fail_operations=power.make_operations_fail,
+        write_requests=lambda: [
+            ("REQUEST", f"{server}:{action.value}") for server, action in power.requests
+        ],
+        allowed_write_requests=frozenset(
+            ("REQUEST", f"{server}:{action.value}")
+            for server in ("100", "101")
+            for action in PowerAction
+        ),
     )
 
 
 def _proxmox_variant(mock: MockProxmoxServer) -> ProviderUnderTest:
+    provider = ProxmoxProvider(Credentials.single(TOKEN), timeout=2.0)
     return ProviderUnderTest(
         name="proxmox",
-        provider=ProxmoxProvider(Credentials.single(TOKEN), timeout=2.0),
+        provider=provider,
         configuration=configuration_for(mock.address),
         credentials=Credentials.single(TOKEN),
         wrong_credentials=Credentials.single(WRONG_TOKEN),
@@ -192,12 +231,22 @@ def _proxmox_variant(mock: MockProxmoxServer) -> ProviderUnderTest:
             TOKEN.split("=", 1)[1],
             WRONG_TOKEN.split("=", 1)[1],
         ),
+        power=provider,
+        reject_power_requests=lambda: setattr(mock.state, "power_forced_status", 403),
+        fail_operations=lambda: setattr(
+            mock.state, "task_exitstatus", "command 'qm start 100' failed"
+        ),
+        write_requests=lambda: [(r.method, r.path) for r in mock.write_requests],
+        allowed_write_requests=PROXMOX_ALLOWED_WRITES,
     )
 
 
 def _contabo_variant(mock: MockContaboServer) -> ProviderUnderTest:
     provider = ContaboProvider(
-        Credentials(CONTABO_VALUES), auth_url=mock.auth_url, timeout=2.0
+        Credentials(CONTABO_VALUES),
+        auth_url=mock.auth_url,
+        timeout=2.0,
+        restart_settle_seconds=0.0,
     )
     return ProviderUnderTest(
         name="contabo",
@@ -209,6 +258,11 @@ def _contabo_variant(mock: MockContaboServer) -> ProviderUnderTest:
         expected_options={"region": EXPECTED_REGIONS, "image": EXPECTED_IMAGES},
         secret_values=tuple(CONTABO_VALUES.values())
         + (CONTABO_WRONG_VALUES["api_password"],),
+        power=provider,
+        reject_power_requests=lambda: setattr(mock.state, "power_forced_status", 403),
+        fail_operations=lambda: setattr(mock.state, "transition_fails", True),
+        write_requests=lambda: [(r.method, r.path) for r in mock.write_requests],
+        allowed_write_requests=CONTABO_ALLOWED_WRITES,
     )
 
 
