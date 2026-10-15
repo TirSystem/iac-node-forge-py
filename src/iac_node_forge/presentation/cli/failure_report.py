@@ -11,6 +11,8 @@ from iac_node_forge.application.errors import (
     UseCaseError,
 )
 from iac_node_forge.domain.errors import DomainError
+from iac_node_forge.domain.provider_kind import ProviderKind
+from iac_node_forge.presentation.cli.provider_words import words_for
 from iac_node_forge.presentation.cli.settings import VERIFY_ENV_VAR, SettingsError
 
 HANDLED_ERRORS: tuple[type[Exception], ...] = (
@@ -24,13 +26,16 @@ HANDLED_ERRORS: tuple[type[Exception], ...] = (
 )
 
 
-def describe(error: Exception, configuration: str | None) -> str:
+def describe(
+    error: Exception, configuration: str | None, kind: ProviderKind | None = None
+) -> str:
     """Return the text for standard error, without a stack trace.
 
-    ``configuration`` is what the user typed to name the provider, if anything.
-    The text never holds a secret: no error of the application carries one.
+    ``configuration`` is what the user typed to name the provider, if anything,
+    and ``kind`` the provider kind of that configuration when it is known. The
+    text never holds a secret: no error of the application carries one.
     """
-    provider = f"provider {configuration!r}" if configuration else "the provider"
+    provider = _provider_phrase(configuration, kind)
     if isinstance(error, ProviderUnreachableError):
         return (
             f"error: {provider} could not be reached: {error}\n"
@@ -38,10 +43,11 @@ def describe(error: Exception, configuration: str | None) -> str:
             f"certificate set {VERIFY_ENV_VAR} (see --help)."
         )
     if isinstance(error, ProviderAuthenticationError):
+        credentials = words_for(kind).credentials if kind else "credentials"
         return (
-            f"error: {provider} rejected the token: {error}\n"
-            "Hint: check the token and its permissions; "
-            "run 'provider add' to save a new one."
+            f"error: {provider} rejected the {credentials}: {error}\n"
+            f"Hint: check the {credentials} and its permissions; "
+            "run 'provider add' to save new ones."
         )
     if isinstance(error, NoConfigurationError):
         return (
@@ -58,3 +64,10 @@ def describe(error: Exception, configuration: str | None) -> str:
     if isinstance(error, ConfigurationFormatError):
         return f"error: the configuration file cannot be read: {error}"
     return f"error: {error}"
+
+
+def _provider_phrase(configuration: str | None, kind: ProviderKind | None) -> str:
+    label = f" ({words_for(kind).label})" if kind else ""
+    if configuration:
+        return f"provider {configuration!r}{label}"
+    return f"the {words_for(kind).label} provider" if kind else "the provider"

@@ -135,7 +135,8 @@ class ContaboProvider:
             items = self._get_pages(configuration.address, IMAGES_PATH)
             return _options(OPTION_KIND_IMAGE, items, ("imageId",))
         raise UnknownOptionKindError(
-            f"Contabo offers no options of kind {option_kind!r}"
+            f"Contabo offers no options of kind {option_kind!r}; valid kinds: "
+            + ", ".join(ProviderKind.CONTABO.option_kinds)
         )
 
     def list_servers(self, configuration: ProviderConfiguration) -> tuple[Server, ...]:

@@ -7,6 +7,7 @@ from iac_node_forge.presentation.cli import exit_codes
 from iac_node_forge.presentation.cli.commands import Subparsers
 from iac_node_forge.presentation.cli.output import NO_VALUE, format_table, write_line
 from iac_node_forge.presentation.cli.provider_resolver import build_resolver
+from iac_node_forge.presentation.cli.provider_words import words_for
 from iac_node_forge.presentation.cli.services import CliServices
 
 MANAGED = "managed"
@@ -55,7 +56,8 @@ def run(arguments: argparse.Namespace, services: CliServices) -> int:
     for failure in listing.failures:
         write_line(
             services.stderr,
-            f"error: provider {failure.provider_name!r} could not be read "
+            f"error: provider {failure.provider_name!r} "
+            f"({words_for(failure.provider_kind).label}) could not be read "
             f"({failure.category.value}): {failure.reason}",
         )
     return exit_codes.FAILURE if listing.failures else exit_codes.SUCCESS

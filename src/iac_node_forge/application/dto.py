@@ -85,6 +85,7 @@ class ProviderFailure:
 
     configuration_id: ConfigurationId
     provider_name: str
+    provider_kind: ProviderKind
     category: FailureCategory
     reason: str
 
