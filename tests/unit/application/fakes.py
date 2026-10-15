@@ -5,6 +5,7 @@ from iac_node_forge.application.errors import (
     CredentialStoreUnavailableError,
     ProviderError,
     ServerNotFoundError,
+    UnknownOptionKindError,
 )
 from iac_node_forge.application.ports import ProviderPort
 from iac_node_forge.domain.access_result import AccessResult
@@ -20,6 +21,8 @@ from iac_node_forge.domain.provider_kind import ProviderKind
 from iac_node_forge.domain.server import Server
 from iac_node_forge.domain.server_option import ServerOption
 
+DEFAULT_OPTION_KINDS = frozenset({"node", "storage"})
+
 
 class FakeProvider:
     """Fake ProviderPort serving preset data."""
@@ -34,6 +37,7 @@ class FakeProvider:
         self._accepted_secret = accepted_secret
         self._capabilities = capabilities
         self._options = options
+        self._option_kinds = DEFAULT_OPTION_KINDS | {o.kind for o in options}
         self._servers = servers
 
     def validate_access(self, address: str, credentials: Credentials) -> AccessResult:
@@ -49,6 +53,8 @@ class FakeProvider:
     def list_server_options(
         self, configuration: ProviderConfiguration, option_kind: str
     ) -> tuple[ServerOption, ...]:
+        if option_kind not in self._option_kinds:
+            raise UnknownOptionKindError(f"no options of kind {option_kind!r}")
         return tuple(o for o in self._options if o.kind == option_kind)
 
     def list_servers(self, configuration: ProviderConfiguration) -> tuple[Server, ...]:

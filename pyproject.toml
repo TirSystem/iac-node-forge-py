@@ -41,6 +41,10 @@ files = ["src", "tests"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+addopts = "-m 'not integration'"
+markers = [
+    "integration: read-only tests against a real Proxmox VE; need PVE_TOKEN",
+]
 
 [tool.importlinter]
 root_package = "iac_node_forge"

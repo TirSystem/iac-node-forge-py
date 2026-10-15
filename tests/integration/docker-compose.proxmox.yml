@@ -1,0 +1,20 @@
+# Proxmox VE for the integration tests in tests/integration.
+#
+# WARNING: the image maconrad/proxmox is a third-party community image and runs
+# privileged. It is for local development only: never use it in CI or on a
+# shared host. The product owner chose this image.
+#
+# The password comes from the environment (PVE_PASSWORD) and has no default,
+# so this file contains no secret.
+services:
+  proxmox-node1:
+    image: maconrad/proxmox:latest
+    container_name: proxmox-node1
+    privileged: true
+    ports:
+      - "8006:8006"
+    environment:
+      - PVE_PASSWORD=${PVE_PASSWORD:?set PVE_PASSWORD in your environment}
+    volumes:
+      - /lib/modules:/lib/modules:ro
+    restart: unless-stopped
