@@ -12,9 +12,11 @@ from iac_node_forge.domain.provider_kind import ProviderKind
 from iac_node_forge.presentation.cli import exit_codes
 from iac_node_forge.presentation.cli.commands import (
     capabilities,
+    operation,
     options,
     provider_add,
     server,
+    server_power,
     servers,
 )
 from iac_node_forge.presentation.cli.composition import build_services
@@ -37,8 +39,18 @@ exit codes:
      credentials (Proxmox VE: API token; Contabo: client ID, client secret,
      API user and API password), configuration or server not found, unknown
      option kind for the provider, nothing configured, a provider failed in
-     'servers'
+     'servers'; for a power command also: the action is unsupported, the server
+     is already in the state, the confirmation is missing or refused, the
+     provider rejected the request, or the operation ended failed or unknown
   2  usage error
+
+power commands (they change the state of a server):
+  server start|shutdown|stop|restart <configuration> <identifier>
+      asks for confirmation, sends one request and follows the operation;
+      'server <configuration> <identifier>' still shows a server;
+      see 'iac-node-forge server start --help'
+  operation <operation-id>
+      shows a recorded operation (--follow follows one that is running)
 """
 
 
@@ -46,7 +58,8 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the parser of every command."""
     parser = argparse.ArgumentParser(
         prog=PROGRAM,
-        description="Read-only command-line client for Proxmox VE and Contabo servers.",
+        description="Command-line client for Proxmox VE and Contabo servers: read "
+        "servers and options, and start, shut down, stop or restart a server.",
         epilog=_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -56,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="provider_command", metavar="action", required=True
     )
     provider_add.add_parser(provider_commands)
-    for module in (capabilities, options, servers, server):
+    for module in (capabilities, options, servers, server, operation):
         module.add_parser(commands)
     return parser
 
@@ -69,10 +82,12 @@ def main(argv: Sequence[str] | None = None, services: CliServices | None = None)
     """
     stdout = services.stdout if services else sys.stdout
     stderr = services.stderr if services else sys.stderr
-    parser = build_parser()
+    words = list(sys.argv[1:] if argv is None else argv)
+    is_power = server_power.is_power_request(words)
+    parser = server_power.build_parser() if is_power else build_parser()
     try:
         with redirect_stdout(stdout), redirect_stderr(stderr):
-            arguments = parser.parse_args(argv)
+            arguments = parser.parse_args(words[1:] if is_power else words)
     except SystemExit as stop:
         return stop.code if isinstance(stop.code, int) else exit_codes.USAGE
     handler = getattr(arguments, "handler", None)

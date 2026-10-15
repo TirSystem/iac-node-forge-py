@@ -95,28 +95,40 @@ class MultiProviderSession:
     keyring: MemoryKeyring
     secrets: dict[str, str] = field(default_factory=dict)
     prompted_names: list[str] = field(default_factory=list)
+    # The answers given to a yes/no question; the client only asks when
+    # ``interactive`` is true, and a question without an answer fails the test.
+    interactive: bool = False
+    answers: list[str] = field(default_factory=list)
+    questions: list[str] = field(default_factory=list)
 
     def run(self, *argv: str) -> Result:
         out, err = io.StringIO(), io.StringIO()
         environment = {"IAC_NODE_FORGE_CONFIG": str(self.configuration_file)}
         real = build_services(
-            environment, out, err, contabo_auth_url=self.contabo.auth_url
+            environment,
+            out,
+            err,
+            contabo_auth_url=self.contabo.auth_url,
+            contabo_restart_settle_seconds=0.0,
         )
         services = replace(
             real,
             credential_prompt=ConsoleCredentialPrompt(self._read_secret),
-            read_line=_no_terminal,
+            read_line=self._read_answer,
+            is_interactive=self.interactive,
         )
         return Result(main(list(argv), services), out.getvalue(), err.getvalue())
+
+    def _read_answer(self, prompt: str) -> str:
+        self.questions.append(prompt)
+        if not self.answers:
+            raise AssertionError(f"the client asked on the terminal: {prompt!r}")
+        return self.answers.pop(0)
 
     def _read_secret(self, prompt: str) -> str:
         name = prompt.split(" for ", 1)[0]
         self.prompted_names.append(name)
         return self.secrets[name]
-
-
-def _no_terminal(prompt: str) -> str:
-    raise AssertionError(f"the client asked on the terminal: {prompt!r}")
 
 
 @pytest.fixture

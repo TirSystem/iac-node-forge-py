@@ -15,7 +15,13 @@ from iac_node_forge.presentation.cli.services import CliServices
 
 def add_parser(subparsers: Subparsers) -> None:
     """Register ``server``."""
-    parser = subparsers.add_parser("server", help="show the details of one server")
+    parser = subparsers.add_parser(
+        "server",
+        help="show the details of one server; start, shutdown, stop, restart it",
+        description="Show the details of one server. The same word starts the "
+        "power commands: 'server start|shutdown|stop|restart <configuration> "
+        "<identifier>' (see 'iac-node-forge server start --help').",
+    )
     parser.add_argument("configuration", help="identifier or display name")
     parser.add_argument("identifier", help="server identifier at the provider")
     parser.set_defaults(handler=run)

@@ -5,6 +5,7 @@ from iac_node_forge.application.errors import (
     ConfigurationNotFoundError,
     CredentialStoreError,
     NoConfigurationError,
+    OperationNotFoundError,
     ProviderAuthenticationError,
     ProviderError,
     ProviderUnreachableError,
@@ -58,6 +59,11 @@ def describe(
         return (
             f"error: {error}\n"
             "Hint: use the display name or the id given to 'provider add'."
+        )
+    if isinstance(error, OperationNotFoundError):
+        return (
+            f"error: no operation {error} is recorded\n"
+            "Hint: use the operation identifier a power command printed."
         )
     if isinstance(error, EOFError):
         return "error: input ended before the answer was given"

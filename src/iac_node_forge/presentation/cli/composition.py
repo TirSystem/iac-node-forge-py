@@ -10,9 +10,14 @@ from iac_node_forge.domain.credentials import Credentials
 from iac_node_forge.domain.provider_kind import ProviderKind
 from iac_node_forge.infrastructure.configuration import (
     JsonLinesConfigurationStore,
+    JsonLinesOperationStore,
     default_configuration_path,
 )
-from iac_node_forge.infrastructure.contabo import DEFAULT_AUTH_URL, ContaboProvider
+from iac_node_forge.infrastructure.contabo import (
+    DEFAULT_AUTH_URL,
+    DEFAULT_RESTART_SETTLE_SECONDS,
+    ContaboProvider,
+)
 from iac_node_forge.infrastructure.credentials import (
     ConsoleCredentialPrompt,
     PlatformCredentialStore,
@@ -31,12 +36,14 @@ def build_services(
     stdout: TextIO,
     stderr: TextIO,
     contabo_auth_url: str | None = None,
+    contabo_restart_settle_seconds: float | None = None,
 ) -> CliServices:
     """Create the real adapters for this environment.
 
     ``contabo_auth_url`` replaces the Contabo token endpoint; only a test
     passes it. It is deliberately not read from the environment, so a hostile
-    environment cannot redirect the credentials.
+    environment cannot redirect the credentials. ``contabo_restart_settle_seconds``
+    is likewise only a test's way to shorten the wait after a restart.
 
     Raises SettingsError when ``IAC_NODE_FORGE_VERIFY`` is not usable.
     """
@@ -56,19 +63,30 @@ def build_services(
                 credentials,
                 auth_url=contabo_auth_url or DEFAULT_AUTH_URL,
                 verify=verify,
+                restart_settle_seconds=(
+                    DEFAULT_RESTART_SETTLE_SECONDS
+                    if contabo_restart_settle_seconds is None
+                    else contabo_restart_settle_seconds
+                ),
             )
         raise UnsupportedProviderError(
             f"no adapter for {kind.value} in this version of the client"
         )
 
+    path = default_configuration_path(environment, sys.platform)
     return CliServices(
-        configurations=JsonLinesConfigurationStore(
-            default_configuration_path(environment, sys.platform)
-        ),
+        configurations=JsonLinesConfigurationStore(path),
+        operations=JsonLinesOperationStore(path),
         credential_store=PlatformCredentialStore(),
         credential_prompt=ConsoleCredentialPrompt(),
         provider_factory=provider_factory,
         read_line=input,
         stdout=stdout,
         stderr=stderr,
+        is_interactive=_stdin_is_terminal(),
     )
+
+
+def _stdin_is_terminal() -> bool:
+    stream = sys.stdin
+    return stream is not None and stream.isatty()

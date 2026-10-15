@@ -2,8 +2,9 @@
 
 import uuid
 from collections.abc import Callable, Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
+from iac_node_forge.application.capabilities import POWER_CAPABILITIES
 from iac_node_forge.application.errors import (
     CredentialEntryInvalidError,
     CredentialNotFoundError,
@@ -300,3 +301,82 @@ class FakeOperationStore:
         if operation_id not in self.operations:
             raise OperationNotFoundError(operation_id)
         return self.operations[operation_id]
+
+
+_STATE_AFTER = {
+    PowerAction.START: "running",
+    PowerAction.SHUTDOWN: "stopped",
+    PowerAction.STOP: "stopped",
+    PowerAction.RESTART: "running",
+}
+
+POWER_CAPABILITY_SET = frozenset(Capability(name) for name in POWER_CAPABILITIES)
+
+
+class FakePoweredProvider(FakeProvider):
+    """One fake that is both a ProviderPort and a ServerPowerPort.
+
+    It is how a real adapter looks to the resolver. A succeeded operation
+    changes the state the server is read with, as a real server would.
+    """
+
+    def __init__(
+        self,
+        servers: tuple[Server, ...] = (),
+        supported: frozenset[PowerAction] = frozenset(PowerAction),
+        steps_to_finish: int = 2,
+        extra_capabilities: frozenset[Capability] = frozenset(),
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
+        super().__init__(
+            capabilities=POWER_CAPABILITY_SET | extra_capabilities, servers=servers
+        )
+        self.power = FakePowerProvider(
+            servers=[server.server_identifier for server in servers],
+            supported=supported,
+            steps_to_finish=steps_to_finish,
+            clock=clock,
+        )
+
+    def request_power(
+        self,
+        configuration: ProviderConfiguration,
+        server_identifier: str,
+        action: PowerAction,
+    ) -> Operation:
+        return self.power.request_power(configuration, server_identifier, action)
+
+    def operation_state(
+        self, configuration: ProviderConfiguration, operation: Operation
+    ) -> Operation:
+        updated = self.power.operation_state(configuration, operation)
+        if updated.state is OperationState.SUCCEEDED and not operation.has_ended:
+            self._servers = tuple(
+                Server(
+                    s.server_identifier,
+                    s.name,
+                    _STATE_AFTER[updated.action],
+                    s.size,
+                    s.addresses,
+                    s.managed,
+                )
+                if s.server_identifier == updated.server_identifier
+                else s
+                for s in self._servers
+            )
+        return updated
+
+
+class FakeClock:
+    """A clock that only moves when ``sleep`` is called, and remembers the sleeps."""
+
+    def __init__(self) -> None:
+        self.now = datetime(2026, 10, 15, 12, 0, tzinfo=UTC)
+        self.sleeps: list[float] = []
+
+    def __call__(self) -> datetime:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += timedelta(seconds=seconds)
