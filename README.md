@@ -83,19 +83,28 @@ plain `pytest`, and are skipped when `PVE_TOKEN` is not set, so CI is not
 affected.
 
 Prerequisites: Docker. The container uses the third-party community image
-`maconrad/proxmox` and runs privileged. Run it on your own machine only, never
+`dockurr/proxmox` and runs privileged. Run it on your own machine only, never
 in CI or on a shared host.
 
-1. Set the container's password in the shell. Do not write it in a file.
+1. Put the container's password in the git-ignored file
+   `tests/integration/pve.env`. Copy the example and edit it; never commit it.
 
    ```bash
-   export PVE_PASSWORD='choose-a-password'
+   cp tests/integration/pve.env.example tests/integration/pve.env
+   # edit tests/integration/pve.env: PVE_PASSWORD=<choose a password>
    ```
 
-2. Start the container.
+2. Start the container, passing that file to compose.
 
    ```bash
-   docker compose -f tests/integration/docker-compose.proxmox.yml up -d
+   docker compose --env-file tests/integration/pve.env -f tests/integration/docker-compose.proxmox.yml up -d
+   ```
+
+   Some images ignore `PVE_PASSWORD`. Set root's password from the value the
+   container received, through standard input:
+
+   ```bash
+   docker exec proxmox-node1 sh -c 'echo "root:$PVE_PASSWORD" | chpasswd'
    ```
 
 3. Wait until `https://localhost:8006` answers (the certificate is
@@ -121,8 +130,10 @@ in CI or on a shared host.
 6. Tear down.
 
    ```bash
-   docker compose -f tests/integration/docker-compose.proxmox.yml down
+   docker compose --env-file tests/integration/pve.env -f tests/integration/docker-compose.proxmox.yml down
    ```
+
+   Delete `tests/integration/pve.env` when you no longer need it.
 
 The token must never be committed or written to a file in the repository. The
 tests never print it and only issue read requests.
