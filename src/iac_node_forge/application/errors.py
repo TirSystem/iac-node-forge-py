@@ -16,6 +16,18 @@ class ProviderUnreachableError(ProviderError):
     """The provider could not be reached: connection, TLS or timeout failure."""
 
 
+class ProviderRateLimitError(ProviderError):
+    """The provider refused the request because a rate limit was reached."""
+
+
+class ProviderServiceError(ProviderError):
+    """The provider answered with a server-side failure (HTTP 5xx)."""
+
+
+class ProviderPageLimitError(ProviderError):
+    """A listing needed more pages than the adapter is willing to read."""
+
+
 class ServerNotFoundError(ProviderError):
     """The provider has no server with the requested identifier."""
 
