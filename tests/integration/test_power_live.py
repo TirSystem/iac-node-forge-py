@@ -335,7 +335,15 @@ def _restore(target: PowerTarget, original: str) -> None:
     result = _request(target, action)
     if result.operation is not None:
         target.tracker.follow_operation(result.operation.operation_id)
-    _wait_for_state(target, original)
+    if _wait_for_state(target, original) == original or original != STOPPED:
+        return
+    if _hard_stop_allowed():
+        # A graceful shutdown that the guest never answers must not leave the
+        # server running; the opt-in already allows a hard power off.
+        forced = _request(target, PowerAction.STOP)
+        if forced.operation is not None:
+            target.tracker.follow_operation(forced.operation.operation_id)
+        _wait_for_state(target, original)
 
 
 def _run_guarded(target: PowerTarget, scenario: Scenario) -> None:
@@ -381,8 +389,12 @@ def _hard_stop(target: PowerTarget) -> Scenario:
     return scenario
 
 
+def _hard_stop_allowed() -> bool:
+    return os.environ.get(HARD_STOP_VARIABLE, "").strip() == "1"
+
+
 def _require_hard_stop_allowed() -> None:
-    if os.environ.get(HARD_STOP_VARIABLE, "").strip() != "1":
+    if not _hard_stop_allowed():
         pytest.skip(f"hard power off is not allowed; {HARD_STOP_VARIABLE} is not 1")
 
 
