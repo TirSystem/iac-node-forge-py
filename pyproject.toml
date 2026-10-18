@@ -43,7 +43,7 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-m 'not integration'"
 markers = [
-    "integration: tests against a real provider; need PVE_TOKEN (Proxmox VE) or the four CONTABO_ variables (Contabo); the power tests in test_power_live.py change the power state of a real server and need their own opt-in variables; test_provision_live.py creates and deletes a container in Proxmox VE and needs its own opt-in variables",
+    "integration: tests against a real provider; need PVE_TOKEN (Proxmox VE) or the four CONTABO_ variables (Contabo); the power tests in test_power_live.py change the power state of a real server and need their own opt-in variables; test_provision_live.py creates a container in Proxmox VE and removes it through the product and needs its own opt-in variables",
 ]
 
 [tool.importlinter]
