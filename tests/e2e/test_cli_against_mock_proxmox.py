@@ -89,7 +89,7 @@ def test_capabilities_show_supported_and_unsupported_actions(
     status = {line.split()[0]: line.split()[1] for line in result.out.splitlines()[2:]}
     assert status["list_servers"] == "supported"
     assert status["inspect_server"] == "supported"
-    assert status["provision_server"] == "unsupported"
+    assert status["provision_server"] == "supported"
     assert status["delete_server"] == "unsupported"
 
 

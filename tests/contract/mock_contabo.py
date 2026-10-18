@@ -4,7 +4,9 @@ One port serves the token endpoint (a form POST that issues a bearer token) and
 the read endpoints with ``page``/``size``/``_pagination``. It requires the
 issued bearer token and a UUID4 ``x-request-id``, can be told to fail, to
 expire the token, to be slow, and records every request so a test can prove
-that only GET (and the token POST) was used.
+that only GET, the token POST, the four power actions and the instance
+creation (``POST /v1/compute/instances``) were used. Every other write
+answers 405 and is recorded.
 """
 
 import json
@@ -24,11 +26,17 @@ TOKEN_PATH = "/auth/realms/contabo/protocol/openid-connect/token"
 INSTANCES_PATH = "/v1/compute/instances"
 DATA_CENTERS_PATH = "/v1/data-centers"
 IMAGES_PATH = "/v1/compute/images"
+# The product listing path is UNVERIFIED (see the adapter); only this mock
+# answers it.
+PRODUCTS_PATH = "/v1/compute/products"
 BAD_REQUEST = 400
 UNAUTHORIZED = 401
 NOT_FOUND = 404
 METHOD_NOT_ALLOWED = 405
 UNSUPPORTED_MEDIA_TYPE = 415
+SERVER_ERROR = 500
+PERIODS = frozenset({1, 12, 24})
+CREATE_FIELDS = ("imageId", "productId", "region", "period", "displayName")
 DEFAULT_PAGE_SIZE = 10
 ACTIONS = frozenset({"start", "shutdown", "stop", "restart"})
 _ACTION_PATH = re.compile(
@@ -71,6 +79,7 @@ class MockContaboState:
     api_password: str
     data_centers: list[dict[str, Any]] = field(default_factory=list)
     images: list[dict[str, Any]] = field(default_factory=list)
+    products: list[dict[str, Any]] = field(default_factory=list)
     instances: list[dict[str, Any]] = field(default_factory=list)
     forced_status: int | None = None
     delay_seconds: float = 0.0
@@ -84,6 +93,12 @@ class MockContaboState:
     empty_instance_data: bool = False
     # Answers every allow-listed power action POST with this status.
     power_forced_status: int | None = None
+    # Answers every instance creation POST with this status.
+    create_forced_status: int | None = None
+    # The creation is accepted (201) but the answer names no instance.
+    create_answers_without_instance: bool = False
+    # The JSON body of every creation the mock accepted, in order.
+    created: list[dict[str, Any]] = field(default_factory=list)
     # Reads of an instance that still show the old (or interim) status after
     # a power action, before the target status appears.
     transition_reads: int = 2
@@ -131,6 +146,9 @@ class _Handler(BaseHTTPRequestHandler):
         action = _ACTION_PATH.fullmatch(parts.path)
         if action is not None:
             self._power_action(action, request_id, state)
+            return
+        if parts.path == INSTANCES_PATH:
+            self._create_instance(request_id, state)
             return
         if parts.path != TOKEN_PATH:
             self._reply(METHOD_NOT_ALLOWED, {})
@@ -189,6 +207,65 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._apply_action(match["id"], match["action"], state)
 
+    def _create_instance(self, request_id: str | None, state: MockContaboState) -> None:
+        if state.delay_seconds:
+            time.sleep(state.delay_seconds)
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length)
+        if state.create_forced_status is not None:
+            self._reply(state.create_forced_status, {})
+        elif state.forced_status is not None:
+            self._reply(state.forced_status, {})
+        elif not self._bearer_accepted(state):
+            self._reply(UNAUTHORIZED, {"message": "invalid token"})
+        elif not _is_uuid4(request_id):
+            self._reply(BAD_REQUEST, {"message": "x-request-id must be a UUID4"})
+        elif self.headers.get("Content-Type", "") != "application/json":
+            self._reply(UNSUPPORTED_MEDIA_TYPE, {"message": "json expected"})
+        else:
+            self._store_instance(raw, state)
+
+    def _store_instance(self, raw: bytes, state: MockContaboState) -> None:
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            body = None
+        if not _creation_is_valid(body):
+            self._reply(BAD_REQUEST, {"message": "invalid creation request"})
+            return
+        identifier = max([100, *(i["instanceId"] for i in state.instances)]) + 1
+        state.created.append(body)
+        if state.create_answers_without_instance:
+            self._reply(201, {"data": [], "_links": {"self": self.path}})
+            return
+        state.instances.append(
+            {
+                "instanceId": identifier,
+                "name": f"vmd{identifier}",
+                "displayName": body["displayName"],
+                "status": "provisioning",
+                "cpuCores": 4,
+                "ramMb": 8192,
+                "region": body["region"],
+                "productId": body["productId"],
+                "imageId": body["imageId"],
+                "ipConfig": {"v4": {"ip": f"203.0.113.{identifier % 250}"}},
+                "additionalIps": [],
+            }
+        )
+        state.transitions[str(identifier)] = MockTransition(
+            "error" if state.transition_fails else "running",
+            state.transition_reads,
+            None,
+        )
+        self._reply(
+            201,
+            {
+                "data": [{"instanceId": identifier, "status": "provisioning"}],
+                "_links": {"self": self.path},
+            },
+        )
+
     def _apply_action(
         self, identifier: str, action: str, state: MockContaboState
     ) -> None:
@@ -243,6 +320,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._reply_page(state.data_centers, query, state)
         elif path == IMAGES_PATH:
             self._reply_page(state.images, query, state)
+        elif path == PRODUCTS_PATH:
+            self._reply_page(state.products, query, state)
         elif path.startswith(INSTANCES_PATH + "/"):
             self._reply_instance(path.removeprefix(INSTANCES_PATH + "/"), state)
         else:
@@ -305,6 +384,16 @@ class _Handler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002
         """Keep the test output quiet."""
+
+
+def _creation_is_valid(body: object) -> bool:
+    """Whether the body holds every field of a creation, with a valid period."""
+    return (
+        isinstance(body, dict)
+        and all(field_name in body for field_name in CREATE_FIELDS)
+        and body["period"] in PERIODS
+        and isinstance(body["period"], int)
+    )
 
 
 def _advance_transition(instance: dict[str, Any], state: MockContaboState) -> None:

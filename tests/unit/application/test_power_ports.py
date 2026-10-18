@@ -16,7 +16,7 @@ from iac_node_forge.application.ports import (
     ServerPowerPort,
 )
 from iac_node_forge.domain.operation import OperationId, OperationState
-from iac_node_forge.domain.power_action import PowerAction
+from iac_node_forge.domain.power_action import POWER_ACTIONS, PowerAction
 from iac_node_forge.domain.provider_configuration import (
     ConfigurationId,
     ProviderConfiguration,
@@ -35,13 +35,25 @@ CONFIGURATION = ProviderConfiguration(
 
 
 def test_every_power_action_maps_to_one_capability_name() -> None:
-    assert set(capabilities.POWER_ACTION_CAPABILITY) == set(PowerAction)
+    assert set(capabilities.POWER_ACTION_CAPABILITY) == set(POWER_ACTIONS)
     assert capabilities.POWER_ACTION_CAPABILITY[PowerAction.START] == "start_server"
     assert (
         capabilities.POWER_ACTION_CAPABILITY[PowerAction.SHUTDOWN] == "shutdown_server"
     )
     assert capabilities.POWER_ACTION_CAPABILITY[PowerAction.STOP] == "stop_server"
     assert capabilities.POWER_ACTION_CAPABILITY[PowerAction.RESTART] == "restart_server"
+
+
+def test_provision_is_not_a_power_action_but_has_its_own_capability() -> None:
+    assert PowerAction.PROVISION not in POWER_ACTIONS
+    assert PowerAction.PROVISION not in capabilities.POWER_ACTION_CAPABILITY
+    assert set(capabilities.ACTION_CAPABILITY) == set(PowerAction)
+    assert capabilities.ACTION_CAPABILITY[PowerAction.PROVISION] == "provision_server"
+    assert (
+        capabilities.ACTION_CAPABILITY[PowerAction.START]
+        == capabilities.POWER_ACTION_CAPABILITY[PowerAction.START]
+    )
+    assert capabilities.PROVISION_SERVER not in capabilities.POWER_CAPABILITIES
 
 
 def test_power_capability_names_are_distinct_and_known() -> None:

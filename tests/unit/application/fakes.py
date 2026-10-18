@@ -2,9 +2,16 @@
 
 import uuid
 from collections.abc import Callable, Iterable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
-from iac_node_forge.application.capabilities import POWER_CAPABILITIES
+from iac_node_forge.application.capabilities import (
+    INSPECT_SERVER,
+    LIST_SERVER_OPTIONS,
+    LIST_SERVERS,
+    POWER_CAPABILITIES,
+    PROVISION_SERVER,
+)
 from iac_node_forge.application.errors import (
     CredentialEntryInvalidError,
     CredentialNotFoundError,
@@ -12,22 +19,28 @@ from iac_node_forge.application.errors import (
     OperationNotFoundError,
     PowerActionUnsupportedError,
     ProviderError,
+    ProvisionUnsupportedError,
     ServerNotFoundError,
     UnknownOptionKindError,
     UnsupportedProviderError,
 )
-from iac_node_forge.application.ports import ProviderPort, ServerPowerPort
+from iac_node_forge.application.ports import (
+    ProviderPort,
+    ServerPowerPort,
+    ServerProvisionPort,
+)
 from iac_node_forge.domain.access_result import AccessResult
 from iac_node_forge.domain.capability import Capability
 from iac_node_forge.domain.credential_reference import CredentialReference
 from iac_node_forge.domain.credentials import Credentials
+from iac_node_forge.domain.desired_configuration import DesiredConfiguration
 from iac_node_forge.domain.managed_server_record import ManagedServerRecord
 from iac_node_forge.domain.operation import (
     Operation,
     OperationId,
     OperationState,
 )
-from iac_node_forge.domain.power_action import PowerAction
+from iac_node_forge.domain.power_action import POWER_ACTIONS, PowerAction
 from iac_node_forge.domain.provider_configuration import (
     ConfigurationId,
     ProviderConfiguration,
@@ -35,6 +48,7 @@ from iac_node_forge.domain.provider_configuration import (
 from iac_node_forge.domain.provider_kind import ProviderKind
 from iac_node_forge.domain.server import Server
 from iac_node_forge.domain.server_option import ServerOption
+from iac_node_forge.domain.value_rule import ValueRule
 
 DEFAULT_OPTION_KINDS = frozenset({"node", "storage"})
 
@@ -182,13 +196,19 @@ class FakeProviderResolver:
         by_configuration: dict[ConfigurationId, ProviderPort] | None = None,
         power: ServerPowerPort | None = None,
         power_by_configuration: dict[ConfigurationId, ServerPowerPort] | None = None,
+        provision: ServerProvisionPort | None = None,
+        provision_by_configuration: dict[ConfigurationId, ServerProvisionPort]
+        | None = None,
     ) -> None:
         self._default = default
         self._by_configuration = by_configuration or {}
         self._power = power
         self._power_by_configuration = power_by_configuration or {}
+        self._provision = provision
+        self._provision_by_configuration = provision_by_configuration or {}
         self.resolved: list[ConfigurationId] = []
         self.power_resolved: list[ConfigurationId] = []
+        self.provision_resolved: list[ConfigurationId] = []
 
     def provider_for(self, configuration: ProviderConfiguration) -> ProviderPort:
         self.resolved.append(configuration.configuration_id)
@@ -206,6 +226,20 @@ class FakeProviderResolver:
             return provider
         raise UnsupportedProviderError("the fake provider has no power actions")
 
+    def provision_for(
+        self, configuration: ProviderConfiguration
+    ) -> ServerProvisionPort:
+        self.provision_resolved.append(configuration.configuration_id)
+        key = configuration.configuration_id
+        if key in self._provision_by_configuration:
+            return self._provision_by_configuration[key]
+        if self._provision is not None:
+            return self._provision
+        provider = self._by_configuration.get(key, self._default)
+        if isinstance(provider, ServerProvisionPort):
+            return provider
+        raise UnsupportedProviderError("the fake provider cannot create servers")
+
 
 class FakePowerProvider:
     """Fake ServerPowerPort with scripted behaviour and a record of requests.
@@ -219,7 +253,7 @@ class FakePowerProvider:
     def __init__(
         self,
         servers: Iterable[str] = ("100", "101"),
-        supported: frozenset[PowerAction] = frozenset(PowerAction),
+        supported: frozenset[PowerAction] = frozenset(POWER_ACTIONS),
         steps_to_finish: int = 2,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
@@ -303,7 +337,7 @@ class FakeOperationStore:
         return self.operations[operation_id]
 
 
-_STATE_AFTER = {
+_STATE_AFTER: dict[PowerAction, str] = {
     PowerAction.START: "running",
     PowerAction.SHUTDOWN: "stopped",
     PowerAction.STOP: "stopped",
@@ -323,7 +357,7 @@ class FakePoweredProvider(FakeProvider):
     def __init__(
         self,
         servers: tuple[Server, ...] = (),
-        supported: frozenset[PowerAction] = frozenset(PowerAction),
+        supported: frozenset[PowerAction] = frozenset(POWER_ACTIONS),
         steps_to_finish: int = 2,
         extra_capabilities: frozenset[Capability] = frozenset(),
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -380,3 +414,138 @@ class FakeClock:
     def sleep(self, seconds: float) -> None:
         self.sleeps.append(seconds)
         self.now += timedelta(seconds=seconds)
+
+
+FAKE_VALUE_RULES = (
+    ValueRule("node", required=True, option_kind="node"),
+    ValueRule("storage", required=True, option_kind="storage"),
+    ValueRule("cores", required=True, minimum=1, maximum=64),
+)
+FAKE_FIRST_IDENTIFIER = 200
+
+
+class FakeProvisionProvider(FakeProvider):
+    """Fake ProviderPort and ServerProvisionPort with scripted behaviour.
+
+    A request returns a RUNNING operation that names the new server; each
+    ``operation_state`` call is one step, and the operation ends after
+    ``steps_to_finish`` steps. A succeeded operation adds the server to
+    ``list_servers``, as a real provider would. ``reserves`` tells whether the
+    provider hands out an identifier before the request (Proxmox VE) or names
+    the server itself (Contabo). Every accepted request is in ``requests``,
+    as (server name, reserved identifier). ``supported`` False leaves the
+    capability out, so a request is refused as unsupported.
+    """
+
+    def __init__(
+        self,
+        servers: tuple[Server, ...] = (),
+        options: tuple[ServerOption, ...] = (),
+        rules: tuple[ValueRule, ...] = FAKE_VALUE_RULES,
+        supported: bool = True,
+        reserves: bool = True,
+        cost: str | None = None,
+        steps_to_finish: int = 2,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
+        names = (LIST_SERVERS, LIST_SERVER_OPTIONS, INSPECT_SERVER)
+        super().__init__(
+            capabilities=frozenset(
+                Capability(name)
+                for name in (*names, *((PROVISION_SERVER,) if supported else ()))
+            ),
+            options=options,
+            servers=servers,
+        )
+        self._rules = rules
+        self._supported = supported
+        self._reserves = reserves
+        self._cost = cost
+        self._steps_to_finish = steps_to_finish
+        self._clock = clock
+        self._rejection: ProviderError | None = None
+        self._operations_fail = False
+        self._next_identifier = FAKE_FIRST_IDENTIFIER
+        self._steps: dict[OperationId, int] = {}
+        self._creating: dict[OperationId, Server] = {}
+        self.requests: list[tuple[str, str | None]] = []
+        self.reads: list[str] = []
+
+    def reject_with(self, error: ProviderError) -> None:
+        self._rejection = error
+
+    def make_operations_fail(self) -> None:
+        self._operations_fail = True
+
+    def value_rules(
+        self, configuration: ProviderConfiguration
+    ) -> tuple[ValueRule, ...]:
+        self.reads.append("value_rules")
+        return self._rules
+
+    def reserve_identifier(self, configuration: ProviderConfiguration) -> str | None:
+        self.reads.append("reserve_identifier")
+        if not self._reserves:
+            return None
+        return str(self._take_identifier())
+
+    def cost_consequence(
+        self, configuration: ProviderConfiguration, desired: DesiredConfiguration
+    ) -> str | None:
+        self.reads.append("cost_consequence")
+        return self._cost
+
+    def request_provision(
+        self,
+        configuration: ProviderConfiguration,
+        desired: DesiredConfiguration,
+        server_name: str,
+        reserved_identifier: str | None,
+    ) -> Operation:
+        if not self._supported:
+            raise ProvisionUnsupportedError("provision_server is not supported")
+        started_at = self._clock()
+        identifier = reserved_identifier or str(self._take_identifier())
+        operation = Operation(
+            operation_id=OperationId(uuid.uuid4().hex),
+            configuration_id=configuration.configuration_id,
+            server_identifier=identifier,
+            action=PowerAction.PROVISION,
+            state=OperationState.RUNNING,
+            started_at=started_at,
+            provider_reference=f"fake-create-{len(self.requests) + 1}",
+        )
+        if self._rejection is not None:
+            return replace(
+                operation, server_identifier=None, provider_reference=None
+            ).ended(OperationState.FAILED, started_at, str(self._rejection))
+        self.requests.append((server_name, reserved_identifier))
+        self._steps[operation.operation_id] = 0
+        self._creating[operation.operation_id] = Server(
+            identifier, server_name, "running", "fake", (), False
+        )
+        return operation
+
+    def operation_state(
+        self, configuration: ProviderConfiguration, operation: Operation
+    ) -> Operation:
+        if operation.has_ended:
+            return operation
+        steps = self._steps.get(operation.operation_id, 0) + 1
+        self._steps[operation.operation_id] = steps
+        if steps < self._steps_to_finish:
+            return operation
+        finished_at = max(self._clock(), operation.started_at)
+        if self._operations_fail:
+            return operation.ended(
+                OperationState.FAILED, finished_at, "the fake creation failed"
+            )
+        created = self._creating.pop(operation.operation_id, None)
+        if created is not None:
+            self._servers = (*self._servers, created)
+        return operation.ended(OperationState.SUCCEEDED, finished_at, None)
+
+    def _take_identifier(self) -> int:
+        identifier = self._next_identifier
+        self._next_identifier += 1
+        return identifier

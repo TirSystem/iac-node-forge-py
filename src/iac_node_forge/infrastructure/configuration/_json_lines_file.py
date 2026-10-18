@@ -65,7 +65,13 @@ _FIELDS: dict[str, frozenset[str]] = {
     ),
 }
 _NULLABLE = frozenset(
-    {"credential_reference_name", "finished_at", "provider_reference", "detail"}
+    {
+        "credential_reference_name",
+        "finished_at",
+        "provider_reference",
+        "detail",
+        "server_identifier",
+    }
 )
 
 type _Row = dict[str, str | None]
@@ -255,7 +261,7 @@ def _operation(row: _Row) -> Operation:
     return Operation(
         operation_id=OperationId(_text(row, "operation_id")),
         configuration_id=ConfigurationId(_text(row, "configuration_id")),
-        server_identifier=_text(row, "server_identifier"),
+        server_identifier=row["server_identifier"],
         action=PowerAction(_text(row, "action")),
         state=OperationState(_text(row, "state")),
         started_at=datetime.fromisoformat(_text(row, "started_at")),

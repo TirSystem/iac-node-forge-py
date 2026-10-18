@@ -20,8 +20,8 @@ class ProviderKind(Enum):
     def option_kinds(self) -> tuple[str, ...]:
         """Return the kinds of server option this provider offers."""
         if self is ProviderKind.CONTABO:
-            return ("region", "image")
-        return ("node", "storage")
+            return ("region", "image", "product")
+        return ("node", "storage", "template")
 
     @property
     def default_address(self) -> str | None:

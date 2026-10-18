@@ -11,7 +11,10 @@ from iac_node_forge.domain.provider_configuration import (
 )
 from iac_node_forge.domain.provider_kind import ProviderKind
 from iac_node_forge.domain.server import Server
-from iac_node_forge.presentation.cli.commands.server_power import is_power_request
+from iac_node_forge.presentation.cli.commands.server_power import (
+    VERBS,
+    is_power_request,
+)
 from tests.unit.application.fakes import FakePoweredProvider, FakeProvider
 from tests.unit.application.samples import DB, LAB, SECRET, WEB, WEB_IS_MANAGED
 from tests.unit.presentation.cli.harness import Harness
@@ -43,6 +46,11 @@ def test_is_power_request_tells_the_power_commands_from_the_read_command() -> No
     assert is_power_request(["server", "start", "--help"])
     assert not is_power_request(["servers"])
     assert not is_power_request([])
+
+
+def test_provision_is_not_a_power_command() -> None:
+    assert VERBS == ("start", "shutdown", "stop", "restart")
+    assert not is_power_request(["server", "provision", "Lab", "100"])
 
 
 def test_the_read_command_still_works_for_a_configuration_named_start() -> None:

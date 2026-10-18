@@ -41,4 +41,9 @@ POWER_ACTION_CAPABILITY: Mapping[PowerAction, str] = MappingProxyType(
 )
 """The capability name a provider declares for each power action, defined once."""
 
+ACTION_CAPABILITY: Mapping[PowerAction, str] = MappingProxyType(
+    {**POWER_ACTION_CAPABILITY, PowerAction.PROVISION: PROVISION_SERVER}
+)
+"""The capability name of every action of an operation, PROVISION included."""
+
 POWER_CAPABILITIES: frozenset[str] = frozenset(POWER_ACTION_CAPABILITY.values())

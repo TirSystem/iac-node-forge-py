@@ -13,6 +13,7 @@ from iac_node_forge.application.ports import (
     CredentialStore,
     ProviderPort,
     ServerPowerPort,
+    ServerProvisionPort,
 )
 from iac_node_forge.domain.credential_reference import CredentialReference
 from iac_node_forge.domain.credentials import Credentials
@@ -99,6 +100,21 @@ class CliProviderResolver:
         if not isinstance(provider, ServerPowerPort):
             raise UnsupportedProviderError(
                 f"no power actions for {configuration.provider_kind.value} "
+                "in this version of the client"
+            )
+        return provider
+
+    def provision_for(
+        self, configuration: ProviderConfiguration
+    ) -> ServerProvisionPort:
+        """Return the provision port of the configuration's adapter.
+
+        One adapter object serves all three ports, as for ``power_for``.
+        """
+        provider = self.provider_for(configuration)
+        if not isinstance(provider, ServerProvisionPort):
+            raise UnsupportedProviderError(
+                f"no provisioning for {configuration.provider_kind.value} "
                 "in this version of the client"
             )
         return provider

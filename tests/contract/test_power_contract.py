@@ -20,7 +20,7 @@ from iac_node_forge.domain.operation import (
     Operation,
     OperationState,
 )
-from iac_node_forge.domain.power_action import PowerAction
+from iac_node_forge.domain.power_action import POWER_ACTIONS, PowerAction
 from tests.contract.provider_under_test import ProviderUnderTest
 
 MAX_POLLS = 20
@@ -55,7 +55,7 @@ def test_provider_satisfies_server_power_port(
     assert isinstance(provider_under_test.power, ServerPowerPort)
 
 
-@pytest.mark.parametrize("action", list(PowerAction))
+@pytest.mark.parametrize("action", list(POWER_ACTIONS))
 def test_declared_action_returns_running_operation_and_undeclared_is_unsupported(
     provider_under_test: ProviderUnderTest, action: PowerAction
 ) -> None:
@@ -75,7 +75,7 @@ def test_declared_action_returns_running_operation_and_undeclared_is_unsupported
     assert operation.finished_at is None
 
 
-@pytest.mark.parametrize("action", list(PowerAction))
+@pytest.mark.parametrize("action", list(POWER_ACTIONS))
 def test_following_a_running_operation_reaches_succeeded(
     provider_under_test: ProviderUnderTest, action: PowerAction
 ) -> None:
@@ -171,16 +171,16 @@ def test_the_only_writes_received_are_the_four_power_requests(
 ) -> None:
     case = provider_under_test
 
-    for action in PowerAction:
+    for action in POWER_ACTIONS:
         operation = case.power.request_power(
             case.configuration, server_for(action), action
         )
         follow(case, operation)
     written = case.write_requests()
 
-    assert len(written) == len(PowerAction)
+    assert len(written) == len(POWER_ACTIONS)
     assert set(written) <= case.allowed_write_requests
-    assert len(set(written)) == len(PowerAction)
+    assert len(set(written)) == len(POWER_ACTIONS)
 
 
 def test_secret_values_never_appear_in_operations_errors_or_logs(
@@ -218,3 +218,16 @@ def _texts_of(operation: Operation) -> list[str]:
         operation.detail or "",
         operation.provider_reference or "",
     ]
+
+
+def test_provision_is_not_a_power_action_and_sends_nothing(
+    provider_under_test: ProviderUnderTest,
+) -> None:
+    case = provider_under_test
+
+    with pytest.raises(PowerActionUnsupportedError):
+        case.power.request_power(
+            case.configuration, RUNNING_SERVER, PowerAction.PROVISION
+        )
+
+    assert case.write_requests() == []

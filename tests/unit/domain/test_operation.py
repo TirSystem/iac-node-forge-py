@@ -19,7 +19,7 @@ from iac_node_forge.domain.operation import (
     OperationState,
     bound_detail,
 )
-from iac_node_forge.domain.power_action import PowerAction
+from iac_node_forge.domain.power_action import POWER_ACTIONS, PowerAction
 from iac_node_forge.domain.provider_configuration import ConfigurationId
 
 START = datetime(2026, 10, 15, 12, 0, tzinfo=UTC)
@@ -39,8 +39,18 @@ def make(**overrides: object) -> Operation:
     return Operation(**values)  # type: ignore[arg-type]
 
 
-def test_power_action_has_the_four_documented_actions() -> None:
-    assert [a.value for a in PowerAction] == ["start", "shutdown", "stop", "restart"]
+def test_power_actions_are_the_four_documented_actions() -> None:
+    assert [a.value for a in POWER_ACTIONS] == [
+        "start",
+        "shutdown",
+        "stop",
+        "restart",
+    ]
+
+
+def test_provision_is_an_action_of_an_operation_but_not_a_power_action() -> None:
+    assert PowerAction.PROVISION.value == "provision"
+    assert PowerAction.PROVISION not in POWER_ACTIONS
 
 
 def test_operation_state_has_the_four_documented_states() -> None:
@@ -208,3 +218,15 @@ def test_operation_fields_have_no_credential_type() -> None:
     hints = {f.name: str(f.type) for f in dataclasses.fields(Operation)}
 
     assert not [name for name, text in hints.items() if "Credentials" in text]
+
+
+def test_provision_operation_may_have_no_server_identifier_yet() -> None:
+    operation = make(action=PowerAction.PROVISION, server_identifier=None)
+
+    assert operation.server_identifier is None
+    assert not operation.has_ended
+
+
+def test_blank_server_identifier_is_still_rejected() -> None:
+    with pytest.raises(EmptyValueError):
+        make(server_identifier=" ")

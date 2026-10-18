@@ -120,7 +120,7 @@ class OperationSummary:
 
     operation_id: str
     configuration_id: ConfigurationId
-    server_identifier: str
+    server_identifier: str | None
     action: PowerAction
     state: OperationState
     started_at: datetime

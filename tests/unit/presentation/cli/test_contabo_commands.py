@@ -25,6 +25,7 @@ from iac_node_forge.domain.server_option import ServerOption
 from iac_node_forge.infrastructure.contabo import ContaboProvider
 from iac_node_forge.infrastructure.contabo import provider as contabo_module
 from iac_node_forge.infrastructure.proxmox import ProxmoxProvider
+from iac_node_forge.infrastructure.proxmox import provider as proxmox_module
 from iac_node_forge.presentation.cli.composition import build_services
 from iac_node_forge.presentation.cli.settings import VERIFY_ENV_VAR
 from tests.unit.application.fakes import FailingProvider, FakeProvider
@@ -219,8 +220,13 @@ def test_option_kinds_of_the_adapters_match_the_provider_kinds() -> None:
     assert ProviderKind.CONTABO.option_kinds == (
         contabo_module.OPTION_KIND_REGION,
         contabo_module.OPTION_KIND_IMAGE,
+        contabo_module.OPTION_KIND_PRODUCT,
     )
-    assert ProviderKind.PROXMOX_VE.option_kinds == ("node", "storage")
+    assert ProviderKind.PROXMOX_VE.option_kinds == (
+        "node",
+        "storage",
+        proxmox_module.OPTION_KIND_TEMPLATE,
+    )
 
 
 def test_servers_of_mixed_providers_are_listed_together() -> None:
