@@ -10,8 +10,10 @@ from iac_node_forge.application.ports import (
     ConfigurationStore,
     CredentialPrompt,
     CredentialStore,
+    DesiredConfigurationStore,
     OperationStore,
     ProviderPort,
+    ProvisionIntentStore,
 )
 from iac_node_forge.domain.credentials import Credentials
 from iac_node_forge.domain.provider_kind import ProviderKind
@@ -37,6 +39,8 @@ class CliServices:
 
     configurations: ConfigurationStore
     operations: OperationStore
+    desired_configurations: DesiredConfigurationStore
+    provision_intents: ProvisionIntentStore
     credential_store: CredentialStore
     credential_prompt: CredentialPrompt
     provider_factory: ProviderFactory

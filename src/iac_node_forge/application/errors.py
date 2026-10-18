@@ -103,5 +103,13 @@ class OperationNotFoundError(UseCaseError):
     """No recorded operation has the given identifier."""
 
 
+class DesiredConfigurationNotFoundError(UseCaseError):
+    """No desired configuration has the given name for the provider configuration."""
+
+
+class ProvisionIntentNotFoundError(UseCaseError):
+    """No recorded provision intent has the given identifier."""
+
+
 class NoConfigurationError(UseCaseError):
     """No provider is configured yet."""

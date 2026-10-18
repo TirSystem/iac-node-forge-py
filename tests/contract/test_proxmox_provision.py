@@ -10,7 +10,9 @@ from iac_node_forge.domain.operation import OperationState
 from iac_node_forge.domain.power_action import PowerAction
 from iac_node_forge.domain.provider_configuration import ProviderConfiguration
 from iac_node_forge.domain.provider_value import ProviderValue
+from iac_node_forge.domain.value_rule import IMAGE_RULE_NAMES
 from iac_node_forge.infrastructure.proxmox import ProxmoxProvider
+from iac_node_forge.infrastructure.proxmox._provision import value_rules
 from tests.contract.conftest import (
     EXPECTED_TEMPLATES,
     PROXMOX_DESIRED,
@@ -79,11 +81,9 @@ def test_virtual_machine_creation_posts_the_qemu_fields(
     provider: ProxmoxProvider,
     configuration: ProviderConfiguration,
 ) -> None:
-    desired = with_values(
-        PROXMOX_DESIRED,
-        kind="qemu",
-        template="pve1/local:iso/debian-12.iso",
-        storage="pve1/local-lvm",
+    desired = replace(
+        with_values(PROXMOX_DESIRED, kind="qemu", storage="pve1/local-lvm"),
+        image="pve1/local:iso/debian-12.iso",
     )
 
     provider.request_provision(configuration, desired, SERVER_NAME, "103")
@@ -231,7 +231,7 @@ def test_a_power_refusal_still_names_the_power_permission(
     assert "VM.Allocate" not in operation.detail
 
 
-@pytest.mark.parametrize("missing", ["kind", "node", "storage", "template", "disk_gb"])
+@pytest.mark.parametrize("missing", ["kind", "node", "storage", "disk_gb"])
 def test_a_missing_value_gives_a_failed_operation_and_sends_nothing(
     mock_proxmox: MockProxmoxServer,
     provider: ProxmoxProvider,
@@ -264,6 +264,29 @@ def test_a_storage_of_another_node_gives_a_failed_operation_and_sends_nothing(
     assert operation.detail is not None
     assert "storage" in operation.detail
     assert mock_proxmox.write_requests == []
+
+
+def test_an_image_of_another_node_gives_a_failed_operation_and_sends_nothing(
+    mock_proxmox: MockProxmoxServer,
+    provider: ProxmoxProvider,
+    configuration: ProviderConfiguration,
+) -> None:
+    desired = replace(PROXMOX_DESIRED, image=EXPECTED_TEMPLATES[2].value)
+
+    operation = provider.request_provision(configuration, desired, SERVER_NAME, "102")
+
+    assert operation.state is OperationState.FAILED
+    assert operation.detail is not None
+    assert "image" in operation.detail
+    assert mock_proxmox.write_requests == []
+
+
+def test_the_neutral_image_is_a_rule_and_not_a_value() -> None:
+    names = {rule.name for rule in value_rules()}
+
+    assert len(names & set(IMAGE_RULE_NAMES)) == 1
+    assert "template" in names
+    assert not {v.name for v in PROXMOX_DESIRED.values} & set(IMAGE_RULE_NAMES)
 
 
 def test_an_unknown_kind_gives_a_failed_operation_and_sends_nothing(

@@ -105,6 +105,9 @@ class _SingleConfigurationStore:
     ) -> tuple[ManagedServerRecord, ...]:
         return ()
 
+    def save_managed_server(self, record: ManagedServerRecord) -> None:
+        raise AssertionError("a live power test never records a managed server")
+
 
 class _FixedResolver:
     """ProviderResolver that hands out the one real adapter for both ports."""

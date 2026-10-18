@@ -8,7 +8,9 @@ from iac_node_forge.presentation.cli import exit_codes
 from iac_node_forge.presentation.cli.commands import Subparsers
 from iac_node_forge.presentation.cli.commands._follow import (
     add_wait_options,
+    complete_provision,
     follow_and_report,
+    write_completion,
 )
 from iac_node_forge.presentation.cli.operation_output import write_operation
 from iac_node_forge.presentation.cli.provider_resolver import build_resolver
@@ -19,12 +21,15 @@ def add_parser(subparsers: Subparsers) -> None:
     """Register ``operation``."""
     parser = subparsers.add_parser(
         "operation",
-        help="show a recorded power operation",
+        help="show a recorded operation (a power action or a provision)",
         description="Show the state, times and detail of a recorded operation. "
         "With --follow, an operation that is still running is followed to its "
-        "end first.",
+        "end first. A provision that has ended is also completed: the server is "
+        "recorded as managed, or the state left at the provider is shown.",
     )
-    parser.add_argument("operation_id", help="identifier printed by the power command")
+    parser.add_argument(
+        "operation_id", help="identifier printed by the power or provision command"
+    )
     parser.add_argument(
         "--follow",
         action="store_true",
@@ -54,4 +59,7 @@ def run(arguments: argparse.Namespace, services: CliServices) -> int:
             arguments.poll_interval,
         )
     write_operation(services.stdout, operation)
+    completion = complete_provision(services, resolver, operation)
+    if completion is not None:
+        write_completion(services.stdout, completion)
     return exit_codes.SUCCESS

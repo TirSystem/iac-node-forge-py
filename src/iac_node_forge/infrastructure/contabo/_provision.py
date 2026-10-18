@@ -14,6 +14,7 @@ from iac_node_forge.infrastructure import _power
 
 VALUE_REGION = "region"
 VALUE_IMAGE = "image"
+"""The rule that names the option kind of the neutral image."""
 VALUE_PRODUCT = "product"
 VALUE_PERIOD = "period"
 PERIODS_MONTHS = ("1", "12", "24")
@@ -23,7 +24,10 @@ _NO_PERIOD = "a contract period of 1, 12 or 24 months, which is not chosen yet"
 
 
 def value_rules() -> tuple[ValueRule, ...]:
-    """Return the values an instance creation needs, all required."""
+    """Return the values an instance creation needs, all required.
+
+    The rule ``image`` is the rule of the neutral image, not of a value.
+    """
     return (
         ValueRule(VALUE_REGION, required=True, option_kind="region"),
         ValueRule(VALUE_IMAGE, required=True, option_kind="image"),
@@ -46,9 +50,9 @@ def cost_consequence(desired: DesiredConfiguration) -> str:
 def build_body(desired: DesiredConfiguration, server_name: str) -> Mapping[str, Any]:
     """Return the JSON body of the creation.
 
-    The image is the value ``image`` when the description has one, otherwise
-    its neutral image. Raises ProviderError, naming the value, when one is
-    missing or the period is not a number; nothing has been sent at that point.
+    The image is the neutral image of the description. Raises ProviderError,
+    naming the value, when one is missing or the period is not a number;
+    nothing has been sent at that point.
     """
     period = _power.required_value(desired, VALUE_PERIOD)
     if period not in PERIODS_MONTHS:
@@ -56,7 +60,7 @@ def build_body(desired: DesiredConfiguration, server_name: str) -> Mapping[str, 
             f"the value {VALUE_PERIOD!r} must be one of " + ", ".join(PERIODS_MONTHS)
         )
     return {
-        "imageId": desired.value(VALUE_IMAGE) or desired.image,
+        "imageId": desired.image,
         "productId": _power.required_value(desired, VALUE_PRODUCT),
         "region": _power.required_value(desired, VALUE_REGION),
         "period": int(period),

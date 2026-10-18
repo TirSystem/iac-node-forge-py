@@ -1,8 +1,13 @@
 """Following an operation to its end and reporting how it ended."""
 
 import argparse
+from typing import TextIO
 
-from iac_node_forge.application.dto import OperationSummary
+from iac_node_forge.application.dto import (
+    OperationSummary,
+    ProvisionOutcome,
+    ProvisionResult,
+)
 from iac_node_forge.application.errors import (
     CredentialStoreError,
     ProviderError,
@@ -15,7 +20,11 @@ from iac_node_forge.application.use_cases import (
     TrackOperation,
 )
 from iac_node_forge.domain.operation import OperationState
+from iac_node_forge.domain.power_action import PowerAction
 from iac_node_forge.presentation.cli import exit_codes
+from iac_node_forge.presentation.cli.commands._provisioning import (
+    build_provision_server,
+)
 from iac_node_forge.presentation.cli.operation_output import write_operation
 from iac_node_forge.presentation.cli.output import write_line
 from iac_node_forge.presentation.cli.provider_resolver import CliProviderResolver
@@ -67,7 +76,11 @@ def follow_and_report(
     time_limit: float,
     poll_interval: float,
 ) -> int:
-    """Follow the operation, print it and return the exit code of its end."""
+    """Follow the operation, print it and return the exit code of its end.
+
+    A provision operation that has ended is also completed: the server is
+    recorded as managed, or the state left at the provider is reported.
+    """
     tracker = TrackOperation(
         resolver,
         services.configurations,
@@ -76,18 +89,62 @@ def follow_and_report(
         services.sleep,
     )
     operation = tracker.follow_operation(operation_id, time_limit, poll_interval)
-    if operation.state is OperationState.SUCCEEDED:
+    return report_end(services, resolver, operation)
+
+
+def report_end(
+    services: CliServices, resolver: CliProviderResolver, operation: OperationSummary
+) -> int:
+    """Print an operation that is not being followed and return its exit code."""
+    completion = complete_provision(services, resolver, operation)
+    if operation.state is OperationState.SUCCEEDED and _is_recorded(completion):
         write_operation(
             services.stdout,
             operation,
             _server_state(services, resolver, operation),
         )
+        if completion is not None:
+            write_completion(services.stdout, completion)
         return exit_codes.SUCCESS
     write_operation(services.stdout, operation)
     if operation.state is OperationState.RUNNING:
         return exit_codes.SUCCESS
-    _write_failure(services, operation)
+    _write_failure(services, operation, completion)
     return exit_codes.FAILURE
+
+
+def complete_provision(
+    services: CliServices, resolver: CliProviderResolver, operation: OperationSummary
+) -> ProvisionResult | None:
+    """Complete a provision operation that has ended; None for any other."""
+    if (
+        operation.action is not PowerAction.PROVISION
+        or operation.state is OperationState.RUNNING
+    ):
+        return None
+    return build_provision_server(services, resolver).complete_provisioning(
+        operation.operation_id
+    )
+
+
+def write_completion(stream: TextIO, completion: ProvisionResult) -> None:
+    """Say how the completion of a provision ended, after the operation block."""
+    if completion.outcome is ProvisionOutcome.COMPLETED:
+        write_line(
+            stream,
+            f"Managed: server {completion.server_identifier!r} is recorded as "
+            "managed by this client.",
+        )
+        return
+    if completion.reason:
+        write_line(stream, f"Provisioning: {completion.reason}")
+    if completion.state_left:
+        write_line(stream, f"State left at the provider: {completion.state_left}")
+
+
+def _is_recorded(completion: ProvisionResult | None) -> bool:
+    """Whether the end counts as a success: not a provision, or a recorded one."""
+    return completion is None or completion.outcome is ProvisionOutcome.COMPLETED
 
 
 def _server_state(
@@ -105,31 +162,56 @@ def _server_state(
     return server.state
 
 
-def _write_failure(services: CliServices, operation: OperationSummary) -> None:
+def _write_failure(
+    services: CliServices,
+    operation: OperationSummary,
+    completion: ProvisionResult | None = None,
+) -> None:
     action = operation.action.value
+    of_server = _of_server(operation)
     detail = operation.detail or "the provider gave no reason"
+    err = services.stderr
     if operation.state is OperationState.FAILED:
+        write_line(err, f"error: the {action}{of_server} failed: {detail}")
+        if completion is not None and completion.state_left:
+            write_line(err, f"State left at the provider: {completion.state_left}")
         write_line(
-            services.stderr,
-            f"error: the {action} of server {operation.server_identifier!r} "
-            f"failed: {detail}",
-        )
-        write_line(
-            services.stderr,
-            "Hint: the request was not repeated; check the server with "
-            f"'iac-node-forge server {operation.configuration_id} "
-            f"{operation.server_identifier}'.",
+            err,
+            f"Hint: the request was not repeated; {_check_hint(operation)}.",
         )
         return
+    if operation.state is OperationState.SUCCEEDED and completion is not None:
+        write_line(
+            err, f"error: the {action}{of_server} is incomplete: {completion.reason}"
+        )
+        write_line(err, f"Hint: {_check_hint(operation)}.")
+        return
     write_line(
-        services.stderr,
-        f"error: the outcome of the {action} of server "
-        f"{operation.server_identifier!r} is unknown: {detail}",
+        err,
+        f"error: the outcome of the {action}{of_server} is unknown: {detail}",
     )
     write_line(
-        services.stderr,
-        "Hint: the request was sent and is not repeated; check the server with "
+        err,
+        f"Hint: the request was sent and is not repeated; {_check_hint(operation)}; "
+        f"the record is shown by 'iac-node-forge operation {operation.operation_id}'.",
+    )
+
+
+def _of_server(operation: OperationSummary) -> str:
+    """`` of server 'x'`` when the provider named the server, otherwise nothing."""
+    if operation.server_identifier is None:
+        return ""
+    return f" of server {operation.server_identifier!r}"
+
+
+def _check_hint(operation: OperationSummary) -> str:
+    if operation.server_identifier is None:
+        return (
+            "list the servers with 'iac-node-forge servers "
+            f"--configuration {operation.configuration_id}'"
+        )
+    return (
+        "check the server with "
         f"'iac-node-forge server {operation.configuration_id} "
-        f"{operation.server_identifier}'; the record is shown by "
-        f"'iac-node-forge operation {operation.operation_id}'.",
+        f"{operation.server_identifier}'"
     )

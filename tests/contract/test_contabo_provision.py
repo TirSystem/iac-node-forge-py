@@ -10,7 +10,9 @@ from iac_node_forge.domain.operation import Operation, OperationState
 from iac_node_forge.domain.power_action import PowerAction
 from iac_node_forge.domain.provider_configuration import ProviderConfiguration
 from iac_node_forge.domain.provider_value import ProviderValue
+from iac_node_forge.domain.value_rule import IMAGE_RULE_NAMES
 from iac_node_forge.infrastructure.contabo import ContaboProvider
+from iac_node_forge.infrastructure.contabo._provision import value_rules
 from tests.contract.conftest import (
     CONTABO_DESIRED,
     CONTABO_VALUES,
@@ -73,29 +75,26 @@ def test_creation_carries_a_request_id_and_the_new_instance_id(
     assert operation.state is OperationState.RUNNING
 
 
-def test_the_image_value_wins_and_the_neutral_image_is_the_fallback(
+def test_the_neutral_image_is_the_image_sent(
     mock_contabo: MockContaboServer,
     provider: ContaboProvider,
     configuration: ProviderConfiguration,
 ) -> None:
     other = EXPECTED_IMAGES[1].value
-    with_value = replace(
-        CONTABO_DESIRED,
-        values=tuple(
-            ProviderValue(v.name, other) if v.name == "image" else v
-            for v in CONTABO_DESIRED.values
-        ),
-    )
-    without_value = replace(
-        CONTABO_DESIRED,
-        image=other,
-        values=tuple(v for v in CONTABO_DESIRED.values if v.name != "image"),
+
+    provider.request_provision(
+        configuration, replace(CONTABO_DESIRED, image=other), "a", None
     )
 
-    provider.request_provision(configuration, with_value, "a", None)
-    provider.request_provision(configuration, without_value, "b", None)
+    assert [body["imageId"] for body in mock_contabo.state.created] == [other]
+    assert "image" not in {v.name for v in CONTABO_DESIRED.values}
 
-    assert [body["imageId"] for body in mock_contabo.state.created] == [other, other]
+
+def test_the_neutral_image_is_a_rule_and_not_a_value() -> None:
+    names = {rule.name for rule in value_rules()}
+
+    assert len(names & set(IMAGE_RULE_NAMES)) == 1
+    assert "image" in names
 
 
 @pytest.mark.parametrize(

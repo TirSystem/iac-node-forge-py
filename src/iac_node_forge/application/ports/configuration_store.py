@@ -26,3 +26,7 @@ class ConfigurationStore(Protocol):
     ) -> tuple[ManagedServerRecord, ...]:
         """Return the servers managed under one configuration."""
         ...
+
+    def save_managed_server(self, record: ManagedServerRecord) -> None:
+        """Record that a server is managed; recording it again changes nothing."""
+        ...

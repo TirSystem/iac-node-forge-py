@@ -17,6 +17,7 @@ from iac_node_forge.presentation.cli.commands import (
     provider_add,
     server,
     server_power,
+    server_provision,
     servers,
 )
 from iac_node_forge.presentation.cli.composition import build_services
@@ -41,7 +42,10 @@ exit codes:
      option kind for the provider, nothing configured, a provider failed in
      'servers'; for a power command also: the action is unsupported, the server
      is already in the state, the confirmation is missing or refused, the
-     provider rejected the request, or the operation ended failed or unknown
+     provider rejected the request, or the operation ended failed or unknown;
+     for 'server define' also: the description is not valid (it is not saved);
+     for 'server provision' also: the description is invalid or unsupported, a
+     server of that name exists or an earlier request for it is not finished
   2  usage error
 
 power commands (they change the state of a server):
@@ -51,6 +55,17 @@ power commands (they change the state of a server):
       see 'iac-node-forge server start --help'
   operation <operation-id>
       shows a recorded operation (--follow follows one that is running)
+
+provisioning (creating a server is a write and may commit the account):
+  server define <configuration> <name> --image IMAGE [--key NAME] [--hint TEXT]
+                [--set NAME=VALUE]
+      checks and saves a named desired configuration; nothing invalid is saved
+  server provision <configuration> <name> [--name SERVER_NAME] [--yes]
+      shows what will be created and its cost, asks, sends one create request
+      and follows the operation; the server is then recorded as managed
+  server definitions <configuration> [--check]
+      lists the desired configurations
+      see 'iac-node-forge server provision --help'
 """
 
 
@@ -59,7 +74,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROGRAM,
         description="Command-line client for Proxmox VE and Contabo servers: read "
-        "servers and options, and start, shut down, stop or restart a server.",
+        "servers and options, define and provision servers, and start, shut down, "
+        "stop or restart a server.",
         epilog=_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -83,11 +99,11 @@ def main(argv: Sequence[str] | None = None, services: CliServices | None = None)
     stdout = services.stdout if services else sys.stdout
     stderr = services.stderr if services else sys.stderr
     words = list(sys.argv[1:] if argv is None else argv)
-    is_power = server_power.is_power_request(words)
-    parser = server_power.build_parser() if is_power else build_parser()
+    group = _server_group_parser(words)
+    parser = group or build_parser()
     try:
         with redirect_stdout(stdout), redirect_stderr(stderr):
-            arguments = parser.parse_args(words[1:] if is_power else words)
+            arguments = parser.parse_args(words[1:] if group else words)
     except SystemExit as stop:
         return stop.code if isinstance(stop.code, int) else exit_codes.USAGE
     handler = getattr(arguments, "handler", None)
@@ -106,6 +122,15 @@ def main(argv: Sequence[str] | None = None, services: CliServices | None = None)
     except KeyboardInterrupt:
         write_line(stderr, "error: interrupted")
     return exit_codes.FAILURE
+
+
+def _server_group_parser(words: Sequence[str]) -> argparse.ArgumentParser | None:
+    """Return the parser of ``server <verb> ...`` when ``words`` is such a command."""
+    if server_power.is_power_request(words):
+        return server_power.build_parser()
+    if server_provision.is_provision_request(words):
+        return server_provision.build_parser()
+    return None
 
 
 def _kind_of(services: CliServices, name: str) -> ProviderKind | None:

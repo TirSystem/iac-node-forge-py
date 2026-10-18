@@ -19,6 +19,7 @@ from iac_node_forge.application.errors import (
     OperationNotFoundError,
     PowerActionUnsupportedError,
     ProviderError,
+    ProvisionIntentNotFoundError,
     ProvisionUnsupportedError,
     ServerNotFoundError,
     UnknownOptionKindError,
@@ -46,6 +47,11 @@ from iac_node_forge.domain.provider_configuration import (
     ProviderConfiguration,
 )
 from iac_node_forge.domain.provider_kind import ProviderKind
+from iac_node_forge.domain.provision_intent import (
+    IntentId,
+    IntentState,
+    ProvisionIntent,
+)
 from iac_node_forge.domain.server import Server
 from iac_node_forge.domain.server_option import ServerOption
 from iac_node_forge.domain.value_rule import ValueRule
@@ -115,6 +121,11 @@ class FakeConfigurationStore:
         self, configuration_id: ConfigurationId
     ) -> tuple[ManagedServerRecord, ...]:
         return tuple(r for r in self.managed if r.configuration_id == configuration_id)
+
+    def save_managed_server(self, record: ManagedServerRecord) -> None:
+        key = (record.configuration_id, record.server_identifier)
+        if key not in {(r.configuration_id, r.server_identifier) for r in self.managed}:
+            self.managed = (*self.managed, record)
 
 
 class FakeCredentialStore:
@@ -337,6 +348,64 @@ class FakeOperationStore:
         return self.operations[operation_id]
 
 
+class FakeDesiredConfigurationStore:
+    """Fake DesiredConfigurationStore keeping desired configurations in memory."""
+
+    def __init__(self) -> None:
+        self.saved: dict[tuple[ConfigurationId, str], DesiredConfiguration] = {}
+        self.saves = 0
+
+    def save(self, desired: DesiredConfiguration) -> None:
+        self.saves += 1
+        self.saved[desired.configuration_id, desired.desired_name] = desired
+
+    def load(
+        self, configuration_id: ConfigurationId, desired_name: str
+    ) -> DesiredConfiguration | None:
+        return self.saved.get((configuration_id, desired_name))
+
+    def load_all(
+        self, configuration_id: ConfigurationId
+    ) -> tuple[DesiredConfiguration, ...]:
+        return tuple(d for (c, _), d in self.saved.items() if c == configuration_id)
+
+
+class FakeProvisionIntentStore:
+    """Fake ProvisionIntentStore; ``saved`` lists every save in order."""
+
+    def __init__(self) -> None:
+        self.intents: dict[IntentId, ProvisionIntent] = {}
+        self.saved: list[ProvisionIntent] = []
+
+    def save(self, intent: ProvisionIntent) -> None:
+        self.intents[intent.intent_id] = intent
+        self.saved.append(intent)
+
+    def load(self, intent_id: IntentId) -> ProvisionIntent:
+        if intent_id not in self.intents:
+            raise ProvisionIntentNotFoundError(intent_id)
+        return self.intents[intent_id]
+
+    def find_pending(
+        self, configuration_id: ConfigurationId, server_name: str
+    ) -> ProvisionIntent | None:
+        return next(
+            (
+                i
+                for i in self.intents.values()
+                if i.state is IntentState.PENDING
+                and i.configuration_id == configuration_id
+                and i.server_name == server_name
+            ),
+            None,
+        )
+
+    def load_by_operation(self, operation_id: OperationId) -> ProvisionIntent | None:
+        return next(
+            (i for i in self.intents.values() if i.operation_id == operation_id), None
+        )
+
+
 _STATE_AFTER: dict[PowerAction, str] = {
     PowerAction.START: "running",
     PowerAction.SHUTDOWN: "stopped",
@@ -470,9 +539,16 @@ class FakeProvisionProvider(FakeProvider):
         self._creating: dict[OperationId, Server] = {}
         self.requests: list[tuple[str, str | None]] = []
         self.reads: list[str] = []
+        # Called when a create request arrives, before the fake acts on it.
+        self.on_request: Callable[[], None] | None = None
 
-    def reject_with(self, error: ProviderError) -> None:
+    def reject_with(self, error: ProviderError | None) -> None:
+        """Make creations fail with ``error``; None makes them succeed again."""
         self._rejection = error
+
+    def add_server(self, server: Server) -> None:
+        """Add a server to the listing, as if it already existed."""
+        self._servers = (*self._servers, server)
 
     def make_operations_fail(self) -> None:
         self._operations_fail = True
@@ -504,6 +580,8 @@ class FakeProvisionProvider(FakeProvider):
     ) -> Operation:
         if not self._supported:
             raise ProvisionUnsupportedError("provision_server is not supported")
+        if self.on_request is not None:
+            self.on_request()
         started_at = self._clock()
         identifier = reserved_identifier or str(self._take_identifier())
         operation = Operation(

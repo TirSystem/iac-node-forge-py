@@ -4,9 +4,12 @@ Pure functions, no network. The provider sends the request this module builds;
 the two create paths here, ``/nodes/{node}/lxc`` and ``/nodes/{node}/qemu``,
 are the only creations the adapter can send (ADR-0007).
 
-A ``storage`` or ``template`` value is the option value the read side offers:
-``<node>/<storage>`` and ``<node>/<volume id>``. Storage is read per node, so
-a value names its node, and it must be the node of the ``node`` value.
+A ``storage`` value and the neutral image are the option values the read side
+offers: ``<node>/<storage>`` and ``<node>/<volume id>``. Storage is read per
+node, so a value names its node, and it must be the node of the ``node`` value.
+The template or installation image is the neutral ``image`` of the description,
+not a second value; the rule named ``template`` only says which option kind the
+image is checked against.
 """
 
 from collections.abc import Mapping
@@ -24,6 +27,7 @@ VALUE_KIND = "kind"
 VALUE_NODE = "node"
 VALUE_STORAGE = "storage"
 VALUE_TEMPLATE = "template"
+"""The rule that names the option kind of the neutral image."""
 VALUE_MEMORY_MB = "memory_mb"
 VALUE_CORES = "cores"
 VALUE_DISK_GB = "disk_gb"
@@ -38,6 +42,7 @@ MIN_DISK_GB = 1
 MAX_DISK_GB = 64 * 1024
 # A container or machine is created stopped and with a DHCP address on the
 # default bridge; nothing about its network is part of the description yet.
+_IMAGE = "image"
 _BRIDGE = "vmbr0"
 _NOT_STARTED = "0"
 
@@ -51,7 +56,10 @@ class CreateRequest:
 
 
 def value_rules() -> tuple[ValueRule, ...]:
-    """Return the values a Proxmox VE creation needs, all required."""
+    """Return the values a Proxmox VE creation needs, all required.
+
+    The rule ``template`` is the rule of the neutral image, not of a value.
+    """
     return (
         ValueRule(VALUE_KIND, required=True, allowed=(KIND_LXC, KIND_QEMU)),
         ValueRule(VALUE_NODE, required=True, option_kind="node"),
@@ -83,9 +91,7 @@ def build_request(
     storage = _on_node(
         node, _power.required_value(desired, VALUE_STORAGE), VALUE_STORAGE
     )
-    template = _on_node(
-        node, _power.required_value(desired, VALUE_TEMPLATE), VALUE_TEMPLATE
-    )
+    template = _on_node(node, desired.image, _IMAGE)
     memory = _power.required_value(desired, VALUE_MEMORY_MB)
     cores = _power.required_value(desired, VALUE_CORES)
     disk = _power.required_value(desired, VALUE_DISK_GB)

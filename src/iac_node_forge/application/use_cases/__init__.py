@@ -9,10 +9,17 @@ from iac_node_forge.application.use_cases.configure_provider_access import (
 from iac_node_forge.application.use_cases.control_server_power import (
     ControlServerPower,
 )
+from iac_node_forge.application.use_cases.define_desired_configuration import (
+    DefineDesiredConfiguration,
+)
+from iac_node_forge.application.use_cases.desired_configuration_validator import (
+    DesiredConfigurationValidator,
+)
 from iac_node_forge.application.use_cases.discover_capabilities import (
     DiscoverCapabilities,
 )
 from iac_node_forge.application.use_cases.list_servers import ListServers
+from iac_node_forge.application.use_cases.provision_server import ProvisionServer
 from iac_node_forge.application.use_cases.track_operation import (
     DEFAULT_POLL_INTERVAL_SECONDS,
     DEFAULT_TIME_LIMIT_SECONDS,
@@ -24,8 +31,11 @@ __all__ = [
     "DEFAULT_TIME_LIMIT_SECONDS",
     "ConfigureProviderAccess",
     "ControlServerPower",
+    "DefineDesiredConfiguration",
+    "DesiredConfigurationValidator",
     "DiscoverCapabilities",
     "ListServers",
+    "ProvisionServer",
     "TrackOperation",
     "find_configuration",
 ]

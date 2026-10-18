@@ -5,6 +5,14 @@ from dataclasses import dataclass
 from iac_node_forge.domain._validation import require_text
 from iac_node_forge.domain.errors import InvalidValueRuleError
 
+IMAGE_RULE_NAMES = ("template", "image")
+"""The names of the rule that says how the neutral image is checked.
+
+The ``image`` of a desired configuration is the single source of the image: a
+provider names the option kind it is checked against in its rule called
+``template`` (Proxmox VE) or ``image`` (Contabo), and that rule is not a value.
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class ValueRule:

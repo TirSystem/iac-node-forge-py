@@ -14,6 +14,8 @@ from iac_node_forge.application.ports import (
     ConfigurationStore,
     OperationStore,
     ProviderResolver,
+    ServerPowerPort,
+    ServerProvisionPort,
 )
 from iac_node_forge.application.use_cases._configuration_lookup import (
     find_configuration,
@@ -24,6 +26,8 @@ from iac_node_forge.domain.operation import (
     OperationState,
     bound_detail,
 )
+from iac_node_forge.domain.power_action import PowerAction
+from iac_node_forge.domain.provider_configuration import ProviderConfiguration
 
 type Clock = Callable[[], datetime]
 """Gives the current timezone-aware time; a test replaces it."""
@@ -91,9 +95,9 @@ class TrackOperation:
             target = find_configuration(
                 self._configurations, operation.configuration_id
             )
-            power = self._providers.power_for(target)
+            reader = self._reader(target, current)
             while True:
-                current = power.operation_state(target, current)
+                current = reader.operation_state(target, current)
                 if current.has_ended:
                     return current
                 remaining = (deadline - self._clock()).total_seconds()
@@ -103,6 +107,14 @@ class TrackOperation:
         except (ProviderError, CredentialStoreError, UseCaseError) as error:
             reason = bound_detail(str(error)) or type(error).__name__
             return self._unknown(current, reason)
+
+    def _reader(
+        self, target: ProviderConfiguration, operation: Operation
+    ) -> ServerPowerPort | ServerProvisionPort:
+        """The port that reads the operation: provision or power, by its action."""
+        if operation.action is PowerAction.PROVISION:
+            return self._providers.provision_for(target)
+        return self._providers.power_for(target)
 
     def _unknown(self, operation: Operation, reason: str) -> Operation:
         finished_at = max(self._clock(), operation.started_at)

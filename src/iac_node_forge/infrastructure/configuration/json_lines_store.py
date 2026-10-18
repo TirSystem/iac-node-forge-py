@@ -69,6 +69,17 @@ class JsonLinesConfigurationStore:
             r for r in self._read().managed if r.configuration_id == configuration_id
         )
 
+    def save_managed_server(self, record: ManagedServerRecord) -> None:
+        """Record a managed server; a record already kept is not written twice."""
+        snapshot = self._read()
+        key = (record.configuration_id, record.server_identifier)
+        if any(
+            (r.configuration_id, r.server_identifier) == key for r in snapshot.managed
+        ):
+            return
+        snapshot.managed.append(record)
+        self._write(snapshot)
+
     def _read(self) -> Snapshot:
         return read_snapshot(self._path)
 

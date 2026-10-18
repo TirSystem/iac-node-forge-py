@@ -52,6 +52,9 @@ iac-node-forge server restart Lab 100 --yes --confirm-unmanaged 100
 iac-node-forge server stop Cloud 100 --no-wait   # prints the operation, exits 0
 iac-node-forge operation <operation-id>          # a recorded operation
 iac-node-forge operation <operation-id> --follow # follow one that is running
+iac-node-forge server define Lab web --image 'pve1/local:vztmpl/alpine.tar.xz' --key deploy --set kind=lxc --set node=pve1 --set storage=pve1/local-lvm --set memory_mb=512 --set cores=1 --set disk_gb=4
+iac-node-forge server definitions Lab --check    # the saved descriptions
+iac-node-forge server provision Lab web --name web-2   # shows the cost, asks, creates
 ```
 
 A configuration is named by its display name (case is ignored) or its id.
@@ -103,8 +106,8 @@ Confirmation rules (ADR-0006):
 - Without a terminal on standard input nothing is asked: `--yes` is required
   and, for an unmanaged server, `--confirm-unmanaged <identifier>` with the
   identifier of that server. Without them the exit code is 1 and no request is
-  sent. No server is recorded as managed by this client yet, so every server
-  needs the extra confirmation for now.
+  sent. A server this client created with `server provision` is recorded as
+  managed; every other server needs the extra confirmation.
 - The state is read first. `start` of a running server and `shutdown` or `stop`
   of a stopped one are reported as already in that state, with exit code 1; no
   request is sent and nothing is recorded.
@@ -116,9 +119,33 @@ The operation ends as `succeeded` (exit 0, with the state the server has now),
 passed or the provider could not be asked, exit 1). An unknown outcome is
 never shown as success and the request is never repeated.
 
+### Define and provision
+
+`server define <configuration> <name> --image IMAGE [--key NAME] [--hint TEXT]
+[--set NAME=VALUE]` checks a description of the server wanted against what the
+provider offers and saves it as a named template (UC-003, ADR-0007). The image is
+the template (Proxmox VE) or the image (Contabo) as `options` shows it; the
+provider-specific values are `kind`, `node`, `storage`, `memory_mb`, `cores` and
+`disk_gb` for Proxmox VE and `region`, `product` and `period` (1, 12 or 24
+months) for Contabo. A description that is not valid is reported, with each
+problem, and not saved (exit 1); one with the same name is replaced. `--key` names
+an access key to install and never holds its value. `server definitions
+<configuration>` lists them; `--check` checks each against the provider now.
+
+`server provision <configuration> <name> [--name SERVER_NAME] [--yes]
+[--no-wait] [--timeout S] [--poll-interval S]` creates one server from a
+description (UC-004). It shows the provider, target, image, size, values and the
+cost consequence (for Contabo the contract period and that the account is
+committed to it), asks for one yes (`--yes` without a terminal), saves an intent,
+sends one create request and follows the operation. When it succeeds the server
+is recorded as managed. A name that already exists at the provider, or an earlier
+request for the name that is not finished (unknown outcome, lost answer), is
+reported and nothing is sent. A rejected or failed creation reports the state left
+at the provider. `operation <id>` completes a provision that has ended.
+
 ### Operation record
 
-Every power request is recorded as one `operation` line of the same
+Every power or provision request is recorded as one `operation` line of the same
 configuration file (identifier, configuration, server, action, state, start and
 end time, the provider's task reference and a bounded detail text). It never
 holds a credential, a token or a header. `iac-node-forge operation <id>` shows
@@ -136,7 +163,7 @@ Output is plain text on standard output; errors go to standard error.
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Success |
-| 1 | A failure you can act on: provider unreachable or credentials rejected (Proxmox VE: API token; Contabo: client ID, client secret, API user and API password), configuration, server or operation not found, unknown option kind for the provider, nothing configured, a provider failed in `servers`; for a power command also an unsupported action, a server already in the state, a missing or refused confirmation, a request the provider rejected, and an operation that ended `failed` or `unknown` |
+| 1 | A failure you can act on: provider unreachable or credentials rejected (Proxmox VE: API token; Contabo: client ID, client secret, API user and API password), configuration, server or operation not found, unknown option kind for the provider, nothing configured, a provider failed in `servers`; for a power command also an unsupported action, a server already in the state, a missing or refused confirmation, a request the provider rejected, and an operation that ended `failed` or `unknown`; for `server define` a description that is not valid; for `server provision` an invalid or unsupported description, an existing server name or an unfinished earlier request, a missing confirmation, a rejected or failed creation |
 | 2 | Usage error |
 
 ## Checks
