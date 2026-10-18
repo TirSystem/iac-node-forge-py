@@ -18,6 +18,7 @@ from iac_node_forge.domain.operation import (
 )
 from iac_node_forge.domain.power_action import PowerAction
 from iac_node_forge.domain.provider_configuration import ProviderConfiguration
+from iac_node_forge.domain.server import Server
 from tests.unit.application.fakes import (
     FakeClock,
     FakeConfigurationStore,
@@ -25,6 +26,7 @@ from tests.unit.application.fakes import (
     FakePowerProvider,
     FakeProvider,
     FakeProviderResolver,
+    FakeRemovalProvider,
 )
 from tests.unit.application.samples import LAB
 
@@ -241,4 +243,28 @@ def test_the_operation_summary_has_the_record_fields_and_no_other() -> None:
         "finished_at",
         "provider_reference",
         "detail",
+        "consequence",
     }
+
+
+def test_follow_reads_a_remove_operation_through_the_removal_port() -> None:
+    clock = FakeClock()
+    removal = FakeRemovalProvider(steps_to_finish=2, clock=clock)
+    store = FakeConfigurationStore()
+    store.save(LAB)
+    operations = FakeOperationStore()
+    running = removal.request_removal(
+        LAB, Server("100", "web", "stopped", "", (), False)
+    )
+    operations.save(running)
+    resolver = FakeProviderResolver(FakeProvider(), removal=removal)
+    tracker = TrackOperation(
+        resolver, store, operations, clock=clock, sleep=clock.sleep
+    )
+
+    result = tracker.follow_operation(running.operation_id, 120, 2)
+
+    assert result.state is OperationState.SUCCEEDED
+    assert result.action is PowerAction.REMOVE
+    assert resolver.removal_resolved == [LAB.configuration_id]
+    assert resolver.power_resolved == []

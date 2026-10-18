@@ -1,12 +1,15 @@
 """Following an operation to its end and reporting how it ended."""
 
 import argparse
+from dataclasses import dataclass
 from typing import TextIO
 
 from iac_node_forge.application.dto import (
     OperationSummary,
     ProvisionOutcome,
     ProvisionResult,
+    RemovalOutcome,
+    RemovalResult,
 )
 from iac_node_forge.application.errors import (
     CredentialStoreError,
@@ -25,10 +28,31 @@ from iac_node_forge.presentation.cli import exit_codes
 from iac_node_forge.presentation.cli.commands._provisioning import (
     build_provision_server,
 )
+from iac_node_forge.presentation.cli.commands._removal import build_remove_server
 from iac_node_forge.presentation.cli.operation_output import write_operation
 from iac_node_forge.presentation.cli.output import write_line
 from iac_node_forge.presentation.cli.provider_resolver import CliProviderResolver
 from iac_node_forge.presentation.cli.services import CliServices
+
+_NOUNS = {PowerAction.REMOVE: "removal"}
+"""The noun for an action whose verb does not read well after ``the``."""
+
+
+@dataclass(frozen=True, slots=True)
+class Completion:
+    """How the completion of an operation ended, as the commands show it.
+
+    ``recorded`` is true when the end of the operation was recorded (a managed
+    server, an ended managed record); ``lines`` are then printed. Otherwise
+    ``reason`` says what is unfinished, labelled ``label``, and ``state_left``
+    what the provider holds.
+    """
+
+    recorded: bool
+    label: str
+    lines: tuple[str, ...] = ()
+    reason: str = ""
+    state_left: str | None = None
 
 
 def _non_negative_seconds(text: str) -> float:
@@ -78,8 +102,9 @@ def follow_and_report(
 ) -> int:
     """Follow the operation, print it and return the exit code of its end.
 
-    A provision operation that has ended is also completed: the server is
-    recorded as managed, or the state left at the provider is reported.
+    A provision or removal operation that has ended is also completed: the
+    server is recorded as managed or its record is ended, or the state left at
+    the provider is reported.
     """
     tracker = TrackOperation(
         resolver,
@@ -96,7 +121,7 @@ def report_end(
     services: CliServices, resolver: CliProviderResolver, operation: OperationSummary
 ) -> int:
     """Print an operation that is not being followed and return its exit code."""
-    completion = complete_provision(services, resolver, operation)
+    completion = complete_operation(services, resolver, operation)
     if operation.state is OperationState.SUCCEEDED and _is_recorded(completion):
         write_operation(
             services.stdout,
@@ -113,38 +138,74 @@ def report_end(
     return exit_codes.FAILURE
 
 
-def complete_provision(
+def complete_operation(
     services: CliServices, resolver: CliProviderResolver, operation: OperationSummary
-) -> ProvisionResult | None:
-    """Complete a provision operation that has ended; None for any other."""
-    if (
-        operation.action is not PowerAction.PROVISION
-        or operation.state is OperationState.RUNNING
-    ):
+) -> Completion | None:
+    """Complete a provision or removal operation that has ended; None otherwise."""
+    if operation.state is OperationState.RUNNING:
         return None
-    return build_provision_server(services, resolver).complete_provisioning(
-        operation.operation_id
-    )
-
-
-def write_completion(stream: TextIO, completion: ProvisionResult) -> None:
-    """Say how the completion of a provision ended, after the operation block."""
-    if completion.outcome is ProvisionOutcome.COMPLETED:
-        write_line(
-            stream,
-            f"Managed: server {completion.server_identifier!r} is recorded as "
-            "managed by this client.",
+    if operation.action is PowerAction.PROVISION:
+        return _provisioned(
+            build_provision_server(services, resolver).complete_provisioning(
+                operation.operation_id
+            )
         )
+    if operation.action is PowerAction.REMOVE:
+        return _removed(
+            build_remove_server(services, resolver).complete_removal(
+                operation.operation_id
+            ),
+            operation,
+        )
+    return None
+
+
+def write_completion(stream: TextIO, completion: Completion) -> None:
+    """Say how the completion of an operation ended, after the operation block."""
+    if completion.recorded:
+        for line in completion.lines:
+            write_line(stream, line)
         return
     if completion.reason:
-        write_line(stream, f"Provisioning: {completion.reason}")
+        write_line(stream, f"{completion.label}: {completion.reason}")
     if completion.state_left:
         write_line(stream, f"State left at the provider: {completion.state_left}")
 
 
-def _is_recorded(completion: ProvisionResult | None) -> bool:
-    """Whether the end counts as a success: not a provision, or a recorded one."""
-    return completion is None or completion.outcome is ProvisionOutcome.COMPLETED
+def _provisioned(result: ProvisionResult) -> Completion:
+    if result.outcome is ProvisionOutcome.COMPLETED:
+        return Completion(
+            True,
+            "Provisioning",
+            (
+                f"Managed: server {result.server_identifier!r} is recorded as "
+                "managed by this client.",
+            ),
+        )
+    return Completion(False, "Provisioning", (), result.reason, result.state_left)
+
+
+def _removed(result: RemovalResult, operation: OperationSummary) -> Completion:
+    if result.outcome is not RemovalOutcome.COMPLETED:
+        return Completion(False, "Removal", (), result.reason, result.state_left)
+    server = repr(operation.server_identifier)
+    lines = [f"State left at the provider: {result.state_left}"]
+    if result.managed_ended:
+        lines.append(
+            f"Managed: the record of server {server} is ended; it no longer "
+            "counts as managed."
+        )
+    else:
+        lines.append(
+            f"Managed: server {server} was not managed by this client; no "
+            "record was changed."
+        )
+    return Completion(True, "Removal", tuple(lines))
+
+
+def _is_recorded(completion: Completion | None) -> bool:
+    """Whether the end counts as a success: nothing to complete, or a recorded one."""
+    return completion is None or completion.recorded
 
 
 def _server_state(
@@ -165,9 +226,9 @@ def _server_state(
 def _write_failure(
     services: CliServices,
     operation: OperationSummary,
-    completion: ProvisionResult | None = None,
+    completion: Completion | None = None,
 ) -> None:
-    action = operation.action.value
+    action = _NOUNS.get(operation.action, operation.action.value)
     of_server = _of_server(operation)
     detail = operation.detail or "the provider gave no reason"
     err = services.stderr
@@ -190,6 +251,8 @@ def _write_failure(
         err,
         f"error: the outcome of the {action}{of_server} is unknown: {detail}",
     )
+    if completion is not None and completion.state_left:
+        write_line(err, f"State left at the provider: {completion.state_left}")
     write_line(
         err,
         f"Hint: the request was sent and is not repeated; {_check_hint(operation)}; "

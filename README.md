@@ -30,9 +30,10 @@ pip install -e ".[dev]"
 ## Usage
 
 The client reads servers and options, and it can start, shut down, stop and
-restart a server. It never creates, deletes, cancels or reinstalls anything at
-a provider: the only requests that change something are the four power
-actions. Installing the package gives the `iac-node-forge` command;
+restart a server, create a server from a saved description and delete or cancel
+one. It never reinstalls anything at a provider: the only requests that change
+something are the four power actions, the create request and the removal
+request, and each of them needs your confirmation first. Installing the package gives the `iac-node-forge` command;
 `python -m iac_node_forge` is the same.
 
 ```bash
@@ -55,6 +56,8 @@ iac-node-forge operation <operation-id> --follow # follow one that is running
 iac-node-forge server define Lab web --image 'pve1/local:vztmpl/alpine.tar.xz' --key deploy --set kind=lxc --set node=pve1 --set storage=pve1/local-lvm --set memory_mb=512 --set cores=1 --set disk_gb=4
 iac-node-forge server definitions Lab --check    # the saved descriptions
 iac-node-forge server provision Lab web --name web-2   # shows the cost, asks, creates
+iac-node-forge server remove Lab 101             # states the consequence, asks you to type the id
+iac-node-forge server remove Cloud 101 --yes --confirm-unmanaged 101
 ```
 
 A configuration is named by its display name (case is ignored) or its id.
@@ -143,11 +146,45 @@ request for the name that is not finished (unknown outcome, lost answer), is
 reported and nothing is sent. A rejected or failed creation reports the state left
 at the provider. `operation <id>` completes a provision that has ended.
 
+### Delete or cancel a server
+
+`server remove <configuration> <identifier> [--yes] [--confirm-unmanaged ID]
+[--no-wait] [--timeout S] [--poll-interval S]` removes one server (UC-012,
+ADR-0008). A removal cannot be undone, so the command always prints the
+preview first: the provider, the server with its name and state, whether this
+client manages it, and what removal means at that provider. Proxmox VE destroys
+the server at once and deletes its disks. Contabo only requests a cancellation:
+the contract and its billing run on until the effective date Contabo reports
+after the request, and the client cannot withdraw it. The date is shown in the
+detail of the operation, never computed by the client.
+
+Safety rules:
+
+- The confirmation is typing the server identifier exactly as the provider
+  names it; a name or a prefix is refused. A server this client does not manage
+  (one not created with `server provision`) needs the identifier typed a second
+  time. At a terminal both are asked for, whatever `--yes` says.
+- Without a terminal nothing is asked: `--yes` is required, the identifier on
+  the command line counts as the typed identifier and, for an unmanaged server,
+  `--confirm-unmanaged <identifier>` is the second typing. Without them the exit
+  code is 1 and no request is sent.
+- A running Proxmox VE server is refused and never stopped for you: shut it down
+  first. A Contabo instance that is already cancelled is reported, and so is a
+  server the provider does not have. Nothing is sent or recorded in these cases.
+- Exactly one removal request is sent. A rejection ends the operation as
+  `failed` with the state left at the provider; a lost answer or a time limit
+  ends it as `unknown`; the request is never repeated.
+- The consequence text shown is recorded with the operation. When the operation
+  succeeds, the managed-server record is ended (kept, with the time and the
+  operation that ended it) and no longer counts as managed.
+  `operation <id>` completes a removal that has ended.
+
 ### Operation record
 
-Every power or provision request is recorded as one `operation` line of the same
-configuration file (identifier, configuration, server, action, state, start and
-end time, the provider's task reference and a bounded detail text). It never
+Every power, provision or removal request is recorded as one `operation` line of
+the same configuration file (identifier, configuration, server, action, state,
+start and end time, the provider's task reference, a bounded detail text and,
+for a removal, the consequence text). It never
 holds a credential, a token or a header. `iac-node-forge operation <id>` shows
 it, also from another process.
 
@@ -163,7 +200,7 @@ Output is plain text on standard output; errors go to standard error.
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Success |
-| 1 | A failure you can act on: provider unreachable or credentials rejected (Proxmox VE: API token; Contabo: client ID, client secret, API user and API password), configuration, server or operation not found, unknown option kind for the provider, nothing configured, a provider failed in `servers`; for a power command also an unsupported action, a server already in the state, a missing or refused confirmation, a request the provider rejected, and an operation that ended `failed` or `unknown`; for `server define` a description that is not valid; for `server provision` an invalid or unsupported description, an existing server name or an unfinished earlier request, a missing confirmation, a rejected or failed creation |
+| 1 | A failure you can act on: provider unreachable or credentials rejected (Proxmox VE: API token; Contabo: client ID, client secret, API user and API password), configuration, server or operation not found, unknown option kind for the provider, nothing configured, a provider failed in `servers`; for a power command also an unsupported action, a server already in the state, a missing or refused confirmation, a request the provider rejected, and an operation that ended `failed` or `unknown`; for `server define` a description that is not valid; for `server provision` an invalid or unsupported description, an existing server name or an unfinished earlier request, a missing confirmation, a rejected or failed creation; for `server remove` an unsupported removal, a running or already removed server, a wrong typed identifier, a missing or refused confirmation, a rejected or failed removal |
 | 2 | Usage error |
 
 ## Checks

@@ -1,14 +1,20 @@
 """Fixtures: the mock provider APIs with data, and the provider variants."""
 
 from collections.abc import Iterator
+from typing import NoReturn
 
 import pytest
 
 from iac_node_forge.application.capabilities import (
     POWER_CAPABILITIES,
     PROVISION_SERVER,
+    REMOVE_SERVER,
 )
-from iac_node_forge.application.errors import ProviderAuthenticationError
+from iac_node_forge.application.errors import (
+    ProviderAuthenticationError,
+    ProviderTimeoutError,
+)
+from iac_node_forge.application.ports import RemovalBlock
 from iac_node_forge.domain.capability import Capability
 from iac_node_forge.domain.credentials import Credentials
 from iac_node_forge.domain.desired_configuration import DesiredConfiguration
@@ -19,17 +25,23 @@ from iac_node_forge.domain.provider_configuration import (
 )
 from iac_node_forge.domain.provider_kind import ProviderKind
 from iac_node_forge.domain.provider_value import ProviderValue
+from iac_node_forge.domain.removal_kind import RemovalKind
 from iac_node_forge.domain.server import Server
 from iac_node_forge.domain.server_option import ServerOption
 from iac_node_forge.infrastructure.contabo import ContaboProvider
 from iac_node_forge.infrastructure.proxmox import ProxmoxProvider
 from tests.contract.mock_contabo import MockContaboServer
 from tests.contract.mock_proxmox import MockProxmoxServer
-from tests.contract.provider_under_test import ProviderUnderTest, ProvisionCase
+from tests.contract.provider_under_test import (
+    ProviderUnderTest,
+    ProvisionCase,
+    RemovalCase,
+)
 from tests.unit.application.fakes import (
     FakePowerProvider,
     FakeProvider,
     FakeProvisionProvider,
+    FakeRemovalProvider,
 )
 
 TOKEN = "root@pam!forge=11111111-2222-3333-4444-555555555555"
@@ -82,8 +94,12 @@ READ_ONLY_CAPABILITIES = frozenset(
 )
 POWER_ONLY_CAPABILITIES = frozenset(Capability(name) for name in POWER_CAPABILITIES)
 PROVISION_CAPABILITY = frozenset({Capability(PROVISION_SERVER)})
+REMOVAL_CAPABILITY = frozenset({Capability(REMOVE_SERVER)})
 ALL_CAPABILITIES = (
-    READ_ONLY_CAPABILITIES | POWER_ONLY_CAPABILITIES | PROVISION_CAPABILITY
+    READ_ONLY_CAPABILITIES
+    | POWER_ONLY_CAPABILITIES
+    | PROVISION_CAPABILITY
+    | REMOVAL_CAPABILITY
 )
 PROXMOX_VERBS = {
     PowerAction.START: "start",
@@ -93,15 +109,26 @@ PROXMOX_VERBS = {
 }
 PROXMOX_PLACES = {"100": ("pve1", "qemu"), "101": ("pve2", "lxc")}
 CONTABO_CREATE_WRITE = ("POST", "/v1/compute/instances")
-CONTABO_ALLOWED_WRITES = frozenset(
-    ("POST", f"/v1/compute/instances/{server}/actions/{verb}")
-    for server in ("100", "101")
-    for verb in ("start", "shutdown", "stop", "restart")
-) | {CONTABO_CREATE_WRITE}
+CONTABO_CANCEL_WRITES = frozenset(
+    ("POST", f"/v1/compute/instances/{server}/cancel") for server in ("100", "101")
+)
+CONTABO_ALLOWED_WRITES = (
+    frozenset(
+        ("POST", f"/v1/compute/instances/{server}/actions/{verb}")
+        for server in ("100", "101")
+        for verb in ("start", "shutdown", "stop", "restart")
+    )
+    | {CONTABO_CREATE_WRITE}
+    | CONTABO_CANCEL_WRITES
+)
 PROXMOX_CREATE_WRITES = frozenset(
     ("POST", f"/api2/json/nodes/{node}/{kind}")
     for node in ("pve1", "pve2")
     for kind in ("lxc", "qemu")
+)
+PROXMOX_DELETE_WRITES = frozenset(
+    ("DELETE", f"/api2/json/nodes/{node}/{kind}/{server}")
+    for server, (node, kind) in PROXMOX_PLACES.items()
 )
 PROXMOX_ALLOWED_WRITES = (
     frozenset(
@@ -110,6 +137,7 @@ PROXMOX_ALLOWED_WRITES = (
         for verb in PROXMOX_VERBS.values()
     )
     | PROXMOX_CREATE_WRITES
+    | PROXMOX_DELETE_WRITES
 )
 
 
@@ -443,3 +471,91 @@ def provision_case(request: pytest.FixtureRequest) -> ProvisionCase:
     if request.param == "contabo":
         return _contabo_provision_case(request.getfixturevalue("mock_contabo"))
     return _fake_provision_case()
+
+
+def _time_out(*args: object, **kwargs: object) -> NoReturn:
+    raise ProviderTimeoutError("the provider did not answer within 2.0 seconds")
+
+
+def _fake_removal_case() -> RemovalCase:
+    fake = FakeRemovalProvider(servers=EXPECTED_SERVERS)
+    return RemovalCase(
+        name="fake",
+        provider=fake,
+        removal=fake,
+        configuration=configuration_for("fake.invalid"),
+        secret_values=(TOKEN, WRONG_TOKEN),
+        kind=RemovalKind.DESTROY,
+        removable_id="101",
+        blocked_id="100",
+        expected_block=RemovalBlock.RUNNING,
+        prepare_blocked=lambda: None,
+        reject_removal=lambda: fake.reject_with(
+            ProviderAuthenticationError("the fake provider answered 403")
+        ),
+        rejection_hint=None,
+        fail_operations=fake.make_operations_fail,
+        lose_answers=fake.answer_unknown,
+        write_requests=lambda: [("REQUEST", server) for server in fake.requests],
+        allowed_write_requests=frozenset(
+            ("REQUEST", server) for server in ("100", "101")
+        ),
+    )
+
+
+def _proxmox_removal_case(mock: MockProxmoxServer) -> RemovalCase:
+    provider = ProxmoxProvider(Credentials.single(TOKEN), timeout=2.0)
+    return RemovalCase(
+        name="proxmox",
+        provider=provider,
+        removal=provider,
+        configuration=configuration_for(mock.address),
+        secret_values=(TOKEN, TOKEN.split("=", 1)[1]),
+        kind=RemovalKind.DESTROY,
+        removable_id="101",
+        blocked_id="100",
+        expected_block=RemovalBlock.RUNNING,
+        prepare_blocked=lambda: None,
+        reject_removal=lambda: setattr(mock.state, "delete_forced_status", 403),
+        rejection_hint="VM.Allocate",
+        fail_operations=lambda: setattr(
+            mock.state, "task_exitstatus", "unable to destroy CT 101 - busy"
+        ),
+        lose_answers=lambda: setattr(provider, "_delete", _time_out),
+        write_requests=lambda: [(r.method, r.path) for r in mock.write_requests],
+        allowed_write_requests=PROXMOX_DELETE_WRITES,
+    )
+
+
+def _contabo_removal_case(mock: MockContaboServer) -> RemovalCase:
+    provider = ContaboProvider(
+        Credentials(CONTABO_VALUES), auth_url=mock.auth_url, timeout=2.0
+    )
+    return RemovalCase(
+        name="contabo",
+        provider=provider,
+        removal=provider,
+        configuration=contabo_configuration_for(mock.address),
+        secret_values=tuple(CONTABO_VALUES.values()),
+        kind=RemovalKind.CANCEL,
+        removable_id="101",
+        blocked_id="100",
+        expected_block=RemovalBlock.ALREADY_REMOVED,
+        prepare_blocked=lambda: mock.state.instances[0].update(status="cancelled"),
+        reject_removal=lambda: setattr(mock.state, "cancel_forced_status", 403),
+        rejection_hint=None,
+        fail_operations=lambda: setattr(mock.state, "transition_fails", True),
+        lose_answers=lambda: setattr(provider, "_authorised_post", _time_out),
+        write_requests=lambda: [(r.method, r.path) for r in mock.write_requests],
+        allowed_write_requests=CONTABO_CANCEL_WRITES,
+    )
+
+
+@pytest.fixture(params=["fake", "proxmox", "contabo"])
+def removal_case(request: pytest.FixtureRequest) -> RemovalCase:
+    """The same removal in each variant; the mocks start on demand."""
+    if request.param == "proxmox":
+        return _proxmox_removal_case(request.getfixturevalue("mock_proxmox"))
+    if request.param == "contabo":
+        return _contabo_removal_case(request.getfixturevalue("mock_contabo"))
+    return _fake_removal_case()

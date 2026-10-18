@@ -1,14 +1,15 @@
-"""ProviderPort, ServerPowerPort and ServerProvisionPort for Proxmox VE.
+"""The four ports (read, power, provision, removal) for Proxmox VE.
 
 Authentication is by Proxmox VE API token only in this slice: the secret of
 the credentials is the full token string ``USER@REALM!TOKENID=SECRET`` and is
 sent as ``Authorization: PVEAPIToken=<secret>``. Ticket login
 (``POST /access/ticket``) is out of scope. Every request is a GET except the
 four power POSTs of ``_POWER_VERB`` (``status/start``, ``shutdown``, ``stop``
-and ``reboot`` of one VM or container) and the two creations of
-``_provision`` (``POST /nodes/{node}/lxc`` and ``/qemu``); no other write path
-exists here (ADR-0006, ADR-0007). The power POSTs need the ``VM.PowerMgmt``
-permission and a creation needs ``VM.Allocate``.
+and ``reboot`` of one VM or container), the two creations of ``_provision``
+(``POST /nodes/{node}/lxc`` and ``/qemu``) and the one deletion of
+``_removal`` (``DELETE /nodes/{node}/lxc|qemu/{vmid}``); no other write path
+exists here (ADR-0006, ADR-0007, ADR-0008). The power POSTs need the
+``VM.PowerMgmt`` permission; a creation and a deletion need ``VM.Allocate``.
 """
 
 import re
@@ -28,6 +29,7 @@ from iac_node_forge.application.errors import (
     ServerNotFoundError,
     UnknownOptionKindError,
 )
+from iac_node_forge.application.ports.server_removal_port import RemovalBlock
 from iac_node_forge.domain.access_result import AccessResult
 from iac_node_forge.domain.capability import Capability
 from iac_node_forge.domain.credentials import Credentials
@@ -36,11 +38,12 @@ from iac_node_forge.domain.operation import Operation, OperationState
 from iac_node_forge.domain.power_action import PowerAction
 from iac_node_forge.domain.provider_configuration import ProviderConfiguration
 from iac_node_forge.domain.provider_kind import ProviderKind
+from iac_node_forge.domain.removal_kind import RemovalKind
 from iac_node_forge.domain.server import Server
 from iac_node_forge.domain.server_option import ServerOption
 from iac_node_forge.domain.value_rule import ValueRule
 from iac_node_forge.infrastructure import _http, _power
-from iac_node_forge.infrastructure.proxmox import _provision
+from iac_node_forge.infrastructure.proxmox import _provision, _removal
 
 API_PREFIX = "/api2/json"
 OPTION_KIND_NODE = "node"
@@ -120,7 +123,7 @@ class ProxmoxProvider:
     def discover_capabilities(
         self, configuration: ProviderConfiguration
     ) -> frozenset[Capability]:
-        """Return the read, the four power and the provision capabilities."""
+        """Return the read, the four power, provision and remove capabilities."""
         return frozenset(
             Capability(name)
             for name in (
@@ -186,7 +189,8 @@ class ProxmoxProvider:
         A provider failure (401, 403, 5xx, unreachable ...) gives a FAILED
         operation; a 403 names the ``VM.PowerMgmt`` permission. Raises
         ServerNotFoundError when no VM or container has the identifier and
-        PowerActionUnsupportedError for PROVISION, which is not a power action.
+        PowerActionUnsupportedError for PROVISION and REMOVE, which are not power
+        actions.
         """
         if action not in _POWER_VERB:
             raise PowerActionUnsupportedError(f"{action.value} is not a power action")
@@ -266,12 +270,71 @@ class ProxmoxProvider:
             configuration, vmid, PowerAction.PROVISION, started_at, upid
         )
 
+    def removal_kind(self, configuration: ProviderConfiguration) -> RemovalKind:
+        """Proxmox VE destroys the machine at once: always DESTROY."""
+        return RemovalKind.DESTROY
+
+    def removal_block(
+        self, configuration: ProviderConfiguration, server: Server
+    ) -> RemovalBlock | None:
+        """Return RUNNING for a running server, else None; sends no request."""
+        return _removal.block(server)
+
+    def consequence(self, configuration: ProviderConfiguration, server: Server) -> str:
+        """State that the server and its disks are destroyed now, for good."""
+        return _removal.consequence(server)
+
+    def request_removal(
+        self, configuration: ProviderConfiguration, server: Server
+    ) -> Operation:
+        """Send one DELETE with ``purge`` and ``destroy-unreferenced-disks``.
+
+        The answer's task identifier is the reference. The node and type of the
+        guest are read first, so no write is sent for an identifier that does
+        not exist (ServerNotFoundError). A rejection (401, 403 naming
+        ``VM.Allocate``, other status) gives a FAILED operation; a timeout gives
+        an UNKNOWN one, because the guest may be gone. A running server is not
+        refused here and is never stopped: the caller checks ``removal_block``.
+        """
+        started_at = self._clock()
+        vmid = server.server_identifier
+        try:
+            node, guest_type = self._locate(configuration, vmid)
+        except ServerNotFoundError:
+            raise
+        except ProviderError as error:
+            return _power.failed_operation(
+                configuration, vmid, PowerAction.REMOVE, started_at, str(error)
+            )
+        try:
+            upid = self._delete(
+                configuration.address,
+                _removal.delete_path(node, guest_type, vmid),
+                _removal.PERMISSION,
+            )
+        except ProviderTimeoutError as error:
+            return _power.unknown_operation(
+                configuration,
+                vmid,
+                PowerAction.REMOVE,
+                started_at,
+                f"the request may have reached the provider: {error}",
+            )
+        except ProviderError as error:
+            return _power.failed_operation(
+                configuration, vmid, PowerAction.REMOVE, started_at, str(error)
+            )
+        return _power.running_operation(
+            configuration, vmid, PowerAction.REMOVE, started_at, upid
+        )
+
     def operation_state(
         self, configuration: ProviderConfiguration, operation: Operation
     ) -> Operation:
         """Read the task status once: running, OK, or another exit status.
 
-        The same reading serves a power action and a provision: both are tasks.
+        The same reading serves a power action, a provision and a removal: all
+        are tasks.
         """
         if operation.has_ended:
             return operation
@@ -388,9 +451,12 @@ class ProxmoxProvider:
         ``permission`` is the one a 401 or 403 says the token may lack.
         """
         data = self._send("POST", address, path, self._credentials, form, permission)
-        if not isinstance(data, str) or not data.startswith(_UPID_PREFIX):
-            raise ProviderError("the provider answer holds no task identifier")
-        return data
+        return _task_id(data)
+
+    def _delete(self, address: str, path: str, permission: str) -> str:
+        """DELETE one resource and return the task identifier of the answer."""
+        data = self._send("DELETE", address, path, self._credentials, None, permission)
+        return _task_id(data)
 
     def _send(
         self,
@@ -411,6 +477,12 @@ class ProxmoxProvider:
         except httpx.TransportError as error:
             raise _http.unreachable_error(error, self._timeout) from error
         return _payload(response, permission)
+
+
+def _task_id(data: _Json) -> str:
+    if not isinstance(data, str) or not data.startswith(_UPID_PREFIX):
+        raise ProviderError("the provider answer holds no task identifier")
+    return data
 
 
 def _upid_node(upid: str) -> str:

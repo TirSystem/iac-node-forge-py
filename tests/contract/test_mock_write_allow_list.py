@@ -1,11 +1,12 @@
-"""The mocks accept only the power writes and the creations; the rest is 405.
+"""The mocks accept only the power writes, the creations and the removals.
 
-The allow-list is the four power POSTs, the Proxmox VE lxc and qemu
-creations and the Contabo instance creation (and its token POST). This is
-the receiving side of Go criterion 5 of MIL-004 and the write-surface rule of
-ADR-0007: the recorders prove what the adapters sent, and these tests prove
-that anything else would have been refused and recorded rather than silently
-served.
+The allow-list is exactly the four power POSTs, the Proxmox VE lxc and qemu
+creations, the Contabo instance creation (and its token POST), the Proxmox VE
+DELETE of an lxc or qemu resource and the Contabo cancel POST. This is the
+receiving side of Go criterion 5 of MIL-004 and MIL-006 and the write-surface
+rule of ADR-0007 and ADR-0008: the recorders prove what the adapters sent, and
+these tests prove that anything else would have been refused and recorded
+rather than silently served.
 """
 
 import httpx
@@ -18,11 +19,19 @@ from tests.contract.mock_proxmox import MockProxmoxServer
 PROXMOX_FORBIDDEN = [
     ("POST", "/api2/json/nodes/pve1/qemu/100/clone"),
     ("POST", "/api2/json/nodes/pve1/lxc/101"),
+    ("POST", "/api2/json/nodes/pve1/qemu/100/resize"),
+    ("PUT", "/api2/json/nodes/pve1/qemu/100/resize"),
+    ("POST", "/api2/json/nodes/pve1/qemu/100/template"),
     ("POST", "/api2/json/nodes/pve1/lxc/101/extra/more"),
     ("POST", "/api2/json/nodes/pve1/vzdump"),
     ("POST", "/api2/json/nodes/pve1/storage"),
     ("PUT", "/api2/json/nodes/pve1/qemu"),
-    ("DELETE", "/api2/json/nodes/pve1/lxc/101"),
+    ("DELETE", "/api2/json/nodes/pve1/lxc"),
+    ("DELETE", "/api2/json/nodes/pve1/lxc/abc"),
+    ("DELETE", "/api2/json/nodes/pve1/lxc/101/config"),
+    ("DELETE", "/api2/json/nodes/pve1/qemu/100/snapshot/before"),
+    ("DELETE", "/api2/json/cluster/resources"),
+    ("DELETE", "/api2/json/nodes/pve1/storage/local"),
     ("POST", "/api2/json/nodes/pve1/qemu/100/status/suspend"),
     ("POST", "/api2/json/nodes/pve1/qemu/100/status/reset"),
     ("POST", "/api2/json/nodes/pve1/qemu/100/snapshot"),
@@ -31,7 +40,6 @@ PROXMOX_FORBIDDEN = [
     ("POST", "/api2/json/nodes/pve1/qemu/100/status/start/extra"),
     ("PUT", "/api2/json/nodes/pve1/qemu/100/status/start"),
     ("PATCH", "/api2/json/nodes/pve1/qemu/100/config"),
-    ("DELETE", "/api2/json/nodes/pve1/qemu/100"),
     ("DELETE", "/api2/json/nodes/pve1/qemu/100/status/stop"),
 ]
 
@@ -45,8 +53,13 @@ CONTABO_FORBIDDEN = [
     ("DELETE", "/v1/compute/instances"),
     ("POST", "/v1/compute/instances/100/actions/rescue"),
     ("POST", "/v1/compute/instances/100/actions/reinstall"),
-    ("POST", "/v1/compute/instances/100/cancel"),
+    ("POST", "/v1/compute/instances/100/cancel/extra"),
+    ("POST", "/v1/compute/instances/abc/cancel"),
+    ("PUT", "/v1/compute/instances/100/cancel"),
+    ("DELETE", "/v1/compute/instances/100/cancel"),
     ("POST", "/v1/compute/instances/100/snapshots"),
+    ("POST", "/v1/compute/instances/100/actions/resize"),
+    ("POST", "/v1/compute/instances/100/upgrade"),
     ("POST", "/v1/compute/instances/100/actions/start/extra"),
     ("PUT", "/v1/compute/instances/100"),
     ("PUT", "/v1/compute/instances/100/actions/start"),
@@ -146,3 +159,107 @@ def test_contabo_mock_accepts_the_creation_only_with_a_token(
     assert response.status_code == 401
     assert mock_contabo.state.created == []
     assert len(mock_contabo.state.instances) == 2
+
+
+@pytest.mark.parametrize("guest_type", ["lxc", "qemu"])
+def test_proxmox_mock_accepts_and_records_the_deletion_only_with_a_token(
+    mock_proxmox: MockProxmoxServer, guest_type: str
+) -> None:
+    path = f"/api2/json/nodes/pve1/{guest_type}/100"
+
+    refused = httpx.delete(mock_proxmox.address + path)
+
+    assert refused.status_code == 401
+    assert mock_proxmox.state.tasks == {}
+    assert mock_proxmox.state.deleted == []
+    assert [(r.method, r.path) for r in mock_proxmox.write_requests] == [
+        ("DELETE", path)
+    ]
+
+
+def test_proxmox_mock_deletes_a_stopped_guest_through_a_task() -> None:
+    with MockProxmoxServer(TOKEN) as server:
+        server.state.resources = [
+            {"node": "pve1", "type": "lxc", "vmid": 101, "status": "stopped"}
+        ]
+
+        response = httpx.delete(
+            server.address
+            + "/api2/json/nodes/pve1/lxc/101?purge=1&destroy-unreferenced-disks=1",
+            headers={"Authorization": f"PVEAPIToken={TOKEN}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"].startswith("UPID:pve1:")
+        assert server.state.deleted == [
+            {"purge": "1", "destroy-unreferenced-disks": "1"}
+        ]
+        assert len(server.state.resources) == 1
+
+
+def test_proxmox_mock_refuses_the_deletion_of_a_running_guest_as_the_provider_does(
+    mock_proxmox: MockProxmoxServer,
+) -> None:
+    response = httpx.delete(
+        mock_proxmox.address + "/api2/json/nodes/pve1/qemu/100",
+        headers={"Authorization": f"PVEAPIToken={TOKEN}"},
+    )
+
+    assert response.status_code == 500
+    assert mock_proxmox.state.tasks == {}
+    assert mock_proxmox.state.resources[0]["status"] == "running"
+
+
+def test_proxmox_mock_allow_list_is_exactly_the_documented_writes(
+    mock_proxmox: MockProxmoxServer,
+) -> None:
+    headers = {"Authorization": f"PVEAPIToken={TOKEN}"}
+    allowed = [
+        ("POST", "/api2/json/nodes/pve1/qemu/100/status/start"),
+        ("POST", "/api2/json/nodes/pve1/qemu/100/status/shutdown"),
+        ("POST", "/api2/json/nodes/pve1/qemu/100/status/stop"),
+        ("POST", "/api2/json/nodes/pve1/qemu/100/status/reboot"),
+        ("POST", "/api2/json/nodes/pve1/lxc"),
+        ("POST", "/api2/json/nodes/pve1/qemu"),
+        ("DELETE", "/api2/json/nodes/pve2/lxc/101"),
+        ("DELETE", "/api2/json/nodes/pve1/qemu/100"),
+    ]
+
+    answers = [
+        httpx.request(method, mock_proxmox.address + path, headers=headers)
+        for method, path in allowed
+    ]
+
+    assert 405 not in {answer.status_code for answer in answers}
+
+
+def test_contabo_mock_accepts_the_cancellation_only_with_a_token(
+    mock_contabo: MockContaboServer,
+) -> None:
+    response = httpx.post(mock_contabo.address + "/v1/compute/instances/101/cancel")
+
+    assert response.status_code == 401
+    assert mock_contabo.state.cancelled == []
+    assert mock_contabo.state.transitions == {}
+    assert [i["status"] for i in mock_contabo.state.instances] == [
+        "running",
+        "stopped",
+    ]
+
+
+def test_contabo_mock_cancel_of_an_unknown_instance_is_not_found(
+    mock_contabo: MockContaboServer,
+) -> None:
+    mock_contabo.state.current_token = "token"
+
+    response = httpx.post(
+        mock_contabo.address + "/v1/compute/instances/999/cancel",
+        headers={
+            "Authorization": "Bearer token",
+            "x-request-id": "5f8a1c0e-4d3b-4a7e-9c21-0b6d2e7f1a34",
+            "Content-Type": "application/json",
+        },
+    )
+
+    assert response.status_code == 404
+    assert mock_contabo.state.cancelled == []

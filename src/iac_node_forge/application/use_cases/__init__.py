@@ -20,6 +20,7 @@ from iac_node_forge.application.use_cases.discover_capabilities import (
 )
 from iac_node_forge.application.use_cases.list_servers import ListServers
 from iac_node_forge.application.use_cases.provision_server import ProvisionServer
+from iac_node_forge.application.use_cases.remove_server import RemoveServer
 from iac_node_forge.application.use_cases.track_operation import (
     DEFAULT_POLL_INTERVAL_SECONDS,
     DEFAULT_TIME_LIMIT_SECONDS,
@@ -36,6 +37,7 @@ __all__ = [
     "DiscoverCapabilities",
     "ListServers",
     "ProvisionServer",
+    "RemoveServer",
     "TrackOperation",
     "find_configuration",
 ]

@@ -44,6 +44,10 @@ class ProvisionUnsupportedError(ProviderError):
     """The provider does not declare the capability to create a server."""
 
 
+class RemovalUnsupportedError(ProviderError):
+    """The provider does not declare the capability to remove a server."""
+
+
 class NotAPowerActionError(Exception):
     """A power operation was asked for an action that is not a power action."""
 

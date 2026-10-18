@@ -4,9 +4,12 @@ One port serves the token endpoint (a form POST that issues a bearer token) and
 the read endpoints with ``page``/``size``/``_pagination``. It requires the
 issued bearer token and a UUID4 ``x-request-id``, can be told to fail, to
 expire the token, to be slow, and records every request so a test can prove
-that only GET, the token POST, the four power actions and the instance
-creation (``POST /v1/compute/instances``) were used. Every other write
-answers 405 and is recorded.
+that only GET, the token POST, the four power actions, the instance
+creation (``POST /v1/compute/instances``) and the cancellation
+(``POST /v1/compute/instances/{id}/cancel``) were used. Every other write
+answers 405 and is recorded. A cancellation answers with the instance id and
+its ``cancelDate``; the instance reads ``cancelled`` after the same number of
+reads as a power transition, and keeps its ``cancelDate``.
 """
 
 import json
@@ -42,6 +45,8 @@ ACTIONS = frozenset({"start", "shutdown", "stop", "restart"})
 _ACTION_PATH = re.compile(
     INSTANCES_PATH + r"/(?P<id>\d+)/actions/(?P<action>start|shutdown|stop|restart)"
 )
+_CANCEL_PATH = re.compile(INSTANCES_PATH + r"/(?P<id>\d+)/cancel")
+CANCEL_DATE = "2026-11-18T00:00:00Z"
 _TARGET_AFTER = {
     "start": "running",
     "shutdown": "stopped",
@@ -95,6 +100,13 @@ class MockContaboState:
     power_forced_status: int | None = None
     # Answers every instance creation POST with this status.
     create_forced_status: int | None = None
+    # Answers every cancellation POST with this status.
+    cancel_forced_status: int | None = None
+    # A cancellation sets the status but no ``cancelDate``, in the answer or on
+    # the instance (C14: the date rule is not stated).
+    cancel_reports_no_date: bool = False
+    # The identifiers of the instances a cancellation was accepted for.
+    cancelled: list[str] = field(default_factory=list)
     # The creation is accepted (201) but the answer names no instance.
     create_answers_without_instance: bool = False
     # The JSON body of every creation the mock accepted, in order.
@@ -149,6 +161,10 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if parts.path == INSTANCES_PATH:
             self._create_instance(request_id, state)
+            return
+        cancel = _CANCEL_PATH.fullmatch(parts.path)
+        if cancel is not None:
+            self._cancel_instance(cancel["id"], request_id, state)
             return
         if parts.path != TOKEN_PATH:
             self._reply(METHOD_NOT_ALLOWED, {})
@@ -206,6 +222,43 @@ class _Handler(BaseHTTPRequestHandler):
             self._reply(UNSUPPORTED_MEDIA_TYPE, {"message": "json expected"})
         else:
             self._apply_action(match["id"], match["action"], state)
+
+    def _cancel_instance(
+        self, identifier: str, request_id: str | None, state: MockContaboState
+    ) -> None:
+        if state.delay_seconds:
+            time.sleep(state.delay_seconds)
+        content_type = self.headers.get("Content-Type", "")
+        if state.cancel_forced_status is not None:
+            self._reply(state.cancel_forced_status, {})
+        elif state.forced_status is not None:
+            self._reply(state.forced_status, {})
+        elif not self._bearer_accepted(state):
+            self._reply(UNAUTHORIZED, {"message": "invalid token"})
+        elif not _is_uuid4(request_id):
+            self._reply(BAD_REQUEST, {"message": "x-request-id must be a UUID4"})
+        elif content_type != "application/json":
+            self._reply(UNSUPPORTED_MEDIA_TYPE, {"message": "json expected"})
+        else:
+            self._apply_cancel(identifier, state)
+
+    def _apply_cancel(self, identifier: str, state: MockContaboState) -> None:
+        found = [i for i in state.instances if str(i.get("instanceId")) == identifier]
+        if not found:
+            self._reply(NOT_FOUND, {"message": "instance not found"})
+            return
+        instance = found[0]
+        state.cancelled.append(identifier)
+        answer: dict[str, Any] = {"instanceId": instance["instanceId"]}
+        if not state.cancel_reports_no_date:
+            instance["cancelDate"] = CANCEL_DATE
+            answer["cancelDate"] = CANCEL_DATE
+        state.transitions[identifier] = MockTransition(
+            "error" if state.transition_fails else "cancelled",
+            state.transition_reads,
+            state.interim_status,
+        )
+        self._reply(200, {"data": [answer], "_links": {"self": self.path}})
 
     def _create_instance(self, request_id: str | None, state: MockContaboState) -> None:
         if state.delay_seconds:

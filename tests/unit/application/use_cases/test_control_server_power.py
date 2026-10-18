@@ -95,6 +95,18 @@ def test_request_reports_a_missing_server_as_not_found_without_a_write() -> None
     assert setup.operations.saved == []
 
 
+def test_remove_is_refused_as_a_power_action_before_anything_is_read() -> None:
+    setup = make()
+
+    with pytest.raises(NotAPowerActionError, match="remove"):
+        setup.use_case.request_power_action("Lab", "100", PowerAction.REMOVE, YES)
+    with pytest.raises(NotAPowerActionError, match="remove"):
+        setup.use_case.preview_power_action("Lab", "100", PowerAction.REMOVE)
+
+    assert setup.power.requests == []
+    assert setup.operations.saved == []
+
+
 def test_request_reports_not_found_when_the_power_port_does_not_know_it() -> None:
     setup = make(power=FakePowerProvider(servers=("101",)))
 

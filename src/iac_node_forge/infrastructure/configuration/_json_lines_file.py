@@ -52,7 +52,14 @@ _FIELDS: dict[str, frozenset[str]] = {
     ),
     _REFERENCE: frozenset({"record_type", "name", "store_kind"}),
     _MANAGED: frozenset(
-        {"record_type", "configuration_id", "server_identifier", "recorded_at"}
+        {
+            "record_type",
+            "configuration_id",
+            "server_identifier",
+            "recorded_at",
+            "ended_at",
+            "ended_by_operation_id",
+        }
     ),
     _OPERATION: frozenset(
         {
@@ -66,9 +73,16 @@ _FIELDS: dict[str, frozenset[str]] = {
             "finished_at",
             "provider_reference",
             "detail",
+            "consequence",
         }
     ),
     **prov.FIELDS,
+}
+# Fields a file written before the removal of a server (MIL-006) does not have;
+# a missing one reads as null, and every write includes them.
+_OPTIONAL: dict[str, frozenset[str]] = {
+    _MANAGED: frozenset({"ended_at", "ended_by_operation_id"}),
+    _OPERATION: frozenset({"consequence"}),
 }
 _NULLABLE = frozenset(
     {
@@ -77,6 +91,9 @@ _NULLABLE = frozenset(
         "provider_reference",
         "detail",
         "server_identifier",
+        "ended_at",
+        "ended_by_operation_id",
+        "consequence",
     }
     | prov.NULLABLE
 )
@@ -171,6 +188,8 @@ def _managed_row(record: ManagedServerRecord) -> Row:
         "configuration_id": record.configuration_id,
         "server_identifier": record.server_identifier,
         "recorded_at": record.recorded_at.isoformat(),
+        "ended_at": record.ended_at.isoformat() if record.ended_at else None,
+        "ended_by_operation_id": record.ended_by_operation_id,
     }
 
 
@@ -187,6 +206,7 @@ def _operation_row(operation: Operation) -> Row:
         "finished_at": finished_at.isoformat() if finished_at else None,
         "provider_reference": operation.provider_reference,
         "detail": operation.detail,
+        "consequence": operation.consequence,
     }
 
 
@@ -207,11 +227,13 @@ def _parse_line(number: int, line: str) -> Row:
         raise ConfigurationFormatError(
             f"line {number}: unknown field {', '.join(map(repr, unknown))}"
         )
-    missing = sorted(expected - set(row))
+    missing = sorted(expected - _OPTIONAL.get(record_type, frozenset()) - set(row))
     if missing:
         raise ConfigurationFormatError(
             f"line {number}: missing field {', '.join(map(repr, missing))}"
         )
+    for key in _OPTIONAL.get(record_type, frozenset()) - set(row):
+        row[key] = None
     for key, value in row.items():
         if not (isinstance(value, str) or (key in _NULLABLE and value is None)):
             raise ConfigurationFormatError(f"line {number}: field {key!r} not text")
@@ -239,13 +261,7 @@ def _collect(rows: list[Row], snapshot: Snapshot) -> None:
             configuration = _configuration(row, snapshot.references)
             snapshot.configurations[configuration.configuration_id] = configuration
         elif kind == _MANAGED:
-            snapshot.managed.append(
-                ManagedServerRecord(
-                    ConfigurationId(text(row, "configuration_id")),
-                    text(row, "server_identifier"),
-                    datetime.fromisoformat(text(row, "recorded_at")),
-                )
-            )
+            snapshot.managed.append(_managed(row))
         elif kind == _OPERATION:
             operation = _operation(row)
             snapshot.operations[operation.operation_id] = operation
@@ -270,6 +286,18 @@ def _configuration(
     )
 
 
+def _managed(row: Row) -> ManagedServerRecord:
+    ended_at = row["ended_at"]
+    ended_by = row["ended_by_operation_id"]
+    return ManagedServerRecord(
+        ConfigurationId(text(row, "configuration_id")),
+        text(row, "server_identifier"),
+        datetime.fromisoformat(text(row, "recorded_at")),
+        datetime.fromisoformat(ended_at) if ended_at else None,
+        OperationId(ended_by) if ended_by is not None else None,
+    )
+
+
 def _operation(row: Row) -> Operation:
     finished_at = row["finished_at"]
     return Operation(
@@ -282,4 +310,5 @@ def _operation(row: Row) -> Operation:
         finished_at=datetime.fromisoformat(finished_at) if finished_at else None,
         provider_reference=row["provider_reference"],
         detail=row["detail"],
+        consequence=row["consequence"],
     )

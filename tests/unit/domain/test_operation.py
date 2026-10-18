@@ -12,6 +12,7 @@ from iac_node_forge.domain.errors import (
     OperationTextTooLongError,
 )
 from iac_node_forge.domain.operation import (
+    MAX_CONSEQUENCE_LENGTH,
     MAX_DETAIL_LENGTH,
     MAX_PROVIDER_REFERENCE_LENGTH,
     Operation,
@@ -51,6 +52,11 @@ def test_power_actions_are_the_four_documented_actions() -> None:
 def test_provision_is_an_action_of_an_operation_but_not_a_power_action() -> None:
     assert PowerAction.PROVISION.value == "provision"
     assert PowerAction.PROVISION not in POWER_ACTIONS
+
+
+def test_remove_is_an_action_of_an_operation_but_not_a_power_action() -> None:
+    assert PowerAction.REMOVE.value == "remove"
+    assert PowerAction.REMOVE not in POWER_ACTIONS
 
 
 def test_operation_state_has_the_four_documented_states() -> None:
@@ -211,6 +217,7 @@ def test_operation_fields_are_the_documented_attributes_only() -> None:
         "finished_at",
         "provider_reference",
         "detail",
+        "consequence",
     ]
 
 
@@ -230,3 +237,31 @@ def test_provision_operation_may_have_no_server_identifier_yet() -> None:
 def test_blank_server_identifier_is_still_rejected() -> None:
     with pytest.raises(EmptyValueError):
         make(server_identifier=" ")
+
+
+def test_consequence_is_kept_as_given_and_is_empty_by_default() -> None:
+    text = "This destroys server 100 now."
+
+    assert make().consequence is None
+    assert make(action=PowerAction.REMOVE, consequence=text).consequence == text
+
+
+def test_consequence_survives_the_end_of_the_operation() -> None:
+    running = make(action=PowerAction.REMOVE, consequence="This destroys it.")
+
+    ended = running.ended(OperationState.SUCCEEDED, LATER, "cancelled, effective soon")
+
+    assert ended.consequence == "This destroys it."
+    assert ended.detail == "cancelled, effective soon"
+
+
+def test_consequence_at_the_bound_is_accepted_and_beyond_it_is_rejected() -> None:
+    assert make(consequence="x" * MAX_CONSEQUENCE_LENGTH)
+
+    with pytest.raises(OperationTextTooLongError):
+        make(consequence="x" * (MAX_CONSEQUENCE_LENGTH + 1))
+
+
+def test_blank_consequence_is_rejected() -> None:
+    with pytest.raises(EmptyValueError):
+        make(consequence="  ")

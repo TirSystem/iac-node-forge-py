@@ -44,6 +44,14 @@ def test_every_power_action_maps_to_one_capability_name() -> None:
     assert capabilities.POWER_ACTION_CAPABILITY[PowerAction.RESTART] == "restart_server"
 
 
+def test_remove_is_not_a_power_action_but_has_its_own_capability() -> None:
+    assert PowerAction.REMOVE not in POWER_ACTIONS
+    assert PowerAction.REMOVE not in capabilities.POWER_ACTION_CAPABILITY
+    assert capabilities.ACTION_CAPABILITY[PowerAction.REMOVE] == "remove_server"
+    assert capabilities.REMOVE_SERVER not in capabilities.POWER_CAPABILITIES
+    assert capabilities.REMOVE_SERVER in capabilities.KNOWN_ACTIONS
+
+
 def test_provision_is_not_a_power_action_but_has_its_own_capability() -> None:
     assert PowerAction.PROVISION not in POWER_ACTIONS
     assert PowerAction.PROVISION not in capabilities.POWER_ACTION_CAPABILITY

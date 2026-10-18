@@ -132,7 +132,7 @@ def test_capabilities_show_supported_and_unsupported_actions(
     assert status["list_servers"] == "supported"
     assert status["inspect_server"] == "supported"
     assert status["provision_server"] == "supported"
-    assert status["delete_server"] == "unsupported"
+    assert status["remove_server"] == "supported"
 
 
 def test_options_list_regions_and_images_of_the_provider(

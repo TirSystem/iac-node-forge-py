@@ -5,9 +5,11 @@ operation records of ``JsonLinesOperationStore``, which this store keeps intact.
 """
 
 from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
 
 from iac_node_forge.domain.managed_server_record import ManagedServerRecord
+from iac_node_forge.domain.operation import OperationId
 from iac_node_forge.domain.provider_configuration import (
     ConfigurationId,
     ProviderConfiguration,
@@ -42,6 +44,16 @@ def default_configuration_path(
     return root / _APP_FOLDER / _FILE_NAME
 
 
+def _same_record(kept: ManagedServerRecord, record: ManagedServerRecord) -> bool:
+    """Whether ``record`` is already kept: the same key, or an active record."""
+    if (kept.configuration_id, kept.server_identifier) != (
+        record.configuration_id,
+        record.server_identifier,
+    ):
+        return False
+    return not kept.is_ended or kept.recorded_at == record.recorded_at
+
+
 class JsonLinesConfigurationStore:
     """Keeps configurations and managed servers in one JSON Lines file."""
 
@@ -64,21 +76,43 @@ class JsonLinesConfigurationStore:
     def managed_servers(
         self, configuration_id: ConfigurationId
     ) -> tuple[ManagedServerRecord, ...]:
-        """Return the servers managed under one configuration."""
+        """Return the servers managed under one configuration, not the ended."""
         return tuple(
-            r for r in self._read().managed if r.configuration_id == configuration_id
+            r
+            for r in self._read().managed
+            if r.configuration_id == configuration_id and not r.is_ended
         )
 
     def save_managed_server(self, record: ManagedServerRecord) -> None:
-        """Record a managed server; a record already kept is not written twice."""
+        """Record a managed server; one that is already managed is not written twice.
+
+        A server whose earlier record is ended is recorded anew, because the
+        provider may reuse its identifier.
+        """
         snapshot = self._read()
-        key = (record.configuration_id, record.server_identifier)
-        if any(
-            (r.configuration_id, r.server_identifier) == key for r in snapshot.managed
-        ):
+        if any(_same_record(r, record) for r in snapshot.managed):
             return
         snapshot.managed.append(record)
         self._write(snapshot)
+
+    def end_managed_server(
+        self,
+        configuration_id: ConfigurationId,
+        server_identifier: str,
+        ended_at: datetime,
+        operation_id: OperationId,
+    ) -> None:
+        """End the active record of a server; nothing changes when there is none."""
+        snapshot = self._read()
+        for index, record in enumerate(snapshot.managed):
+            if (
+                record.configuration_id == configuration_id
+                and record.server_identifier == server_identifier
+                and not record.is_ended
+            ):
+                snapshot.managed[index] = record.ended(ended_at, operation_id)
+                self._write(snapshot)
+                return
 
     def _read(self) -> Snapshot:
         return read_snapshot(self._path)

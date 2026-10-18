@@ -15,6 +15,7 @@ from iac_node_forge.domain.credential_reference import CredentialReference
 from iac_node_forge.domain.credentials import Credentials
 from iac_node_forge.domain.desired_configuration import DesiredConfiguration
 from iac_node_forge.domain.managed_server_record import ManagedServerRecord
+from iac_node_forge.domain.operation import OperationId
 from iac_node_forge.domain.provider_configuration import (
     ConfigurationId,
     ProviderConfiguration,
@@ -124,6 +125,18 @@ def test_configuration_store_records_a_managed_server_once() -> None:
     store.save_managed_server(record)
 
     assert store.managed_servers(CONFIG_ID) == (record,)
+
+
+def test_configuration_store_ends_a_managed_server_and_stops_listing_it() -> None:
+    now = datetime.now(UTC)
+    record = ManagedServerRecord(CONFIG_ID, "100", now)
+    store = FakeConfigurationStore(managed=(record,))
+
+    store.end_managed_server(CONFIG_ID, "100", now, OperationId("op-1"))
+    store.end_managed_server(CONFIG_ID, "100", now, OperationId("op-2"))
+
+    assert store.managed_servers(CONFIG_ID) == ()
+    assert [r.ended_by_operation_id for r in store.managed] == ["op-1"]
 
 
 def test_fake_desired_configuration_store_satisfies_its_port() -> None:

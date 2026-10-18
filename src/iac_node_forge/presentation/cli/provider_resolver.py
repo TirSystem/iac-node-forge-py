@@ -14,6 +14,7 @@ from iac_node_forge.application.ports import (
     ProviderPort,
     ServerPowerPort,
     ServerProvisionPort,
+    ServerRemovalPort,
 )
 from iac_node_forge.domain.credential_reference import CredentialReference
 from iac_node_forge.domain.credentials import Credentials
@@ -109,12 +110,25 @@ class CliProviderResolver:
     ) -> ServerProvisionPort:
         """Return the provision port of the configuration's adapter.
 
-        One adapter object serves all three ports, as for ``power_for``.
+        One adapter object serves all four ports, as for ``power_for``.
         """
         provider = self.provider_for(configuration)
         if not isinstance(provider, ServerProvisionPort):
             raise UnsupportedProviderError(
                 f"no provisioning for {configuration.provider_kind.value} "
+                "in this version of the client"
+            )
+        return provider
+
+    def removal_for(self, configuration: ProviderConfiguration) -> ServerRemovalPort:
+        """Return the removal port of the configuration's adapter.
+
+        One adapter object serves all four ports, as for ``power_for``.
+        """
+        provider = self.provider_for(configuration)
+        if not isinstance(provider, ServerRemovalPort):
+            raise UnsupportedProviderError(
+                f"no removal for {configuration.provider_kind.value} "
                 "in this version of the client"
             )
         return provider

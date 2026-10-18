@@ -28,6 +28,7 @@ import os
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,7 @@ from iac_node_forge.application.ports import (
     ProviderPort,
     ServerPowerPort,
     ServerProvisionPort,
+    ServerRemovalPort,
 )
 from iac_node_forge.application.use_cases.control_server_power import (
     ControlServerPower,
@@ -108,6 +110,15 @@ class _SingleConfigurationStore:
     def save_managed_server(self, record: ManagedServerRecord) -> None:
         raise AssertionError("a live power test never records a managed server")
 
+    def end_managed_server(
+        self,
+        configuration_id: ConfigurationId,
+        server_identifier: str,
+        ended_at: datetime,
+        operation_id: OperationId,
+    ) -> None:
+        raise AssertionError("a live power test never ends a managed server")
+
 
 class _FixedResolver:
     """ProviderResolver that hands out the one real adapter for both ports."""
@@ -124,6 +135,9 @@ class _FixedResolver:
     def provision_for(
         self, configuration: ProviderConfiguration
     ) -> ServerProvisionPort:
+        return self._provider
+
+    def removal_for(self, configuration: ProviderConfiguration) -> ServerRemovalPort:
         return self._provider
 
 

@@ -19,6 +19,9 @@ OperationId = NewType("OperationId", str)
 MAX_DETAIL_LENGTH = 500
 """Longest ``detail`` an Operation accepts, in characters."""
 
+MAX_CONSEQUENCE_LENGTH = 500
+"""Longest ``consequence`` an Operation accepts, in characters."""
+
 MAX_PROVIDER_REFERENCE_LENGTH = 200
 """Longest ``provider_reference`` an Operation accepts, in characters."""
 
@@ -52,17 +55,19 @@ def bound_detail(text: str) -> str | None:
 
 @dataclass(frozen=True, slots=True)
 class Operation:
-    """One requested action (a power action or a provision) and its outcome.
+    """One requested action (a power action, a provision or a removal) and its
+    outcome.
 
-    It holds identifiers, an action, a state, two timestamps and two bounded
-    texts (a provider task identifier and a detail). It has no field for a
+    It holds identifiers, an action, a state, two timestamps and three bounded
+    texts (a provider task identifier, a detail and, for a removal, the
+    consequence text shown before it was confirmed). It has no field for a
     credential, a token or a header, and a caller never passes one: the
     adapters build ``detail`` from the provider's status or exit status only.
 
     Invariants: a RUNNING operation has no ``finished_at``; every other state
     has one, not before ``started_at``; both timestamps carry a timezone;
-    ``detail`` and ``provider_reference``, when given, are not blank and within
-    their bounds (``bound_detail`` shapes a provider text to fit);
+    ``detail``, ``consequence`` and ``provider_reference``, when given, are not
+    blank and within their bounds (``bound_detail`` shapes a provider text to fit);
     ``server_identifier`` is None for a provision until the provider names the
     server, and is not blank otherwise.
     """
@@ -76,6 +81,7 @@ class Operation:
     finished_at: datetime | None = None
     provider_reference: str | None = None
     detail: str | None = None
+    consequence: str | None = None
 
     def __post_init__(self) -> None:
         require_text("Operation", "operation_id", self.operation_id)
@@ -87,6 +93,7 @@ class Operation:
             "provider_reference", self.provider_reference, MAX_PROVIDER_REFERENCE_LENGTH
         )
         self._check_text("detail", self.detail, MAX_DETAIL_LENGTH)
+        self._check_text("consequence", self.consequence, MAX_CONSEQUENCE_LENGTH)
 
     @property
     def has_ended(self) -> bool:
