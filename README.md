@@ -324,3 +324,46 @@ input for the client secret and the API password), then
 `CONTABO_POWER_TEST_SERVER` and `CONTABO_POWER_TEST_CONFIRM`, and run
 `pytest -m integration -k "power and contabo" -v`. See the wiki guide
 `Power-Control-Live-Test`.
+
+## Provisioning live test (creates a container)
+
+WARNING: `tests/integration/test_provision_live.py` really creates one LXC
+container in a Proxmox VE and then deletes it. Use only the disposable Docker
+Proxmox VE of `tests/integration/docker-compose.proxmox.yml`, never a Proxmox VE
+that serves anything. Only Proxmox VE is tested live; Contabo is never created
+live because it costs money.
+
+The container is named `iacnf-live-<8 hex>`, new on every run. The deletion is a
+helper of the test module (the client itself cannot delete anything): it removes
+only the container this run created, also when an assertion fails. Nothing runs
+unless every variable is set; the skip reason names the missing ones, never a
+value.
+
+| Variable | Meaning |
+| --- | --- |
+| `PVE_TOKEN`, `PVE_ADDRESS`, `PVE_VERIFY` | as in the Proxmox VE live test |
+| `PVE_PROVISION_TEST_NODE` | the node name, such as the one of the Docker Proxmox VE |
+| `PVE_PROVISION_TEST_STORAGE` | the storage of the root disk, such as `local` |
+| `PVE_PROVISION_TEST_TEMPLATE` | a container template on that node, such as `local:vztmpl/alpine-3.24-default_20260714_amd64.tar.xz` |
+| `PVE_PROVISION_TEST_CONFIRM` | exactly `create-server-iacnf-live` |
+
+bash:
+
+```bash
+read -rsp 'PVE token: ' PVE_TOKEN && export PVE_TOKEN
+export PVE_PROVISION_TEST_NODE='<node>' PVE_PROVISION_TEST_STORAGE='local'
+export PVE_PROVISION_TEST_TEMPLATE='local:vztmpl/<template>'
+export PVE_PROVISION_TEST_CONFIRM='create-server-iacnf-live'
+pytest -m integration -k provision -v
+```
+
+PowerShell:
+
+```powershell
+$env:PVE_TOKEN = Read-Host 'PVE token' -AsSecureString | ConvertFrom-SecureString -AsPlainText
+$env:PVE_PROVISION_TEST_NODE = '<node>'
+$env:PVE_PROVISION_TEST_STORAGE = 'local'
+$env:PVE_PROVISION_TEST_TEMPLATE = 'local:vztmpl/<template>'
+$env:PVE_PROVISION_TEST_CONFIRM = 'create-server-iacnf-live'
+pytest -m integration -k provision -v
+```
