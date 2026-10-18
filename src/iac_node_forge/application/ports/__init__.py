@@ -16,6 +16,10 @@ from iac_node_forge.application.ports.server_power_port import ServerPowerPort
 from iac_node_forge.application.ports.server_provision_port import (
     ServerProvisionPort,
 )
+from iac_node_forge.application.ports.server_removal_port import (
+    RemovalBlock,
+    ServerRemovalPort,
+)
 
 __all__ = [
     "ConfigurationStore",
@@ -26,6 +30,8 @@ __all__ = [
     "ProviderPort",
     "ProviderResolver",
     "ProvisionIntentStore",
+    "RemovalBlock",
     "ServerPowerPort",
     "ServerProvisionPort",
+    "ServerRemovalPort",
 ]

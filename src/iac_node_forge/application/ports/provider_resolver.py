@@ -7,6 +7,7 @@ from iac_node_forge.application.ports.server_power_port import ServerPowerPort
 from iac_node_forge.application.ports.server_provision_port import (
     ServerProvisionPort,
 )
+from iac_node_forge.application.ports.server_removal_port import ServerRemovalPort
 from iac_node_forge.domain.provider_configuration import ProviderConfiguration
 
 
@@ -41,6 +42,14 @@ class ProviderResolver(Protocol):
         """Return the provision port for a configuration.
 
         Raises UnsupportedProviderError when its adapter cannot create servers
+        and a CredentialStoreError when its credentials cannot be obtained.
+        """
+        ...
+
+    def removal_for(self, configuration: ProviderConfiguration) -> ServerRemovalPort:
+        """Return the removal port for a configuration.
+
+        Raises UnsupportedProviderError when its adapter cannot remove servers
         and a CredentialStoreError when its credentials cannot be obtained.
         """
         ...

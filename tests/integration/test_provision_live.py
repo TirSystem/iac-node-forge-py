@@ -38,6 +38,7 @@ from iac_node_forge.application.ports import (
     ProviderPort,
     ServerPowerPort,
     ServerProvisionPort,
+    ServerRemovalPort,
 )
 from iac_node_forge.application.use_cases.define_desired_configuration import (
     DefineDesiredConfiguration,
@@ -200,6 +201,9 @@ class _FixedResolver:
     def provision_for(
         self, configuration: ProviderConfiguration
     ) -> ServerProvisionPort:
+        return self._provider
+
+    def removal_for(self, configuration: ProviderConfiguration) -> ServerRemovalPort:
         return self._provider
 
 

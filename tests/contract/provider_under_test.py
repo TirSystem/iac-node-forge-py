@@ -5,12 +5,15 @@ from dataclasses import dataclass
 
 from iac_node_forge.application.ports import (
     ProviderPort,
+    RemovalBlock,
     ServerPowerPort,
     ServerProvisionPort,
+    ServerRemovalPort,
 )
 from iac_node_forge.domain.credentials import Credentials
 from iac_node_forge.domain.desired_configuration import DesiredConfiguration
 from iac_node_forge.domain.provider_configuration import ProviderConfiguration
+from iac_node_forge.domain.removal_kind import RemovalKind
 from iac_node_forge.domain.server import Server
 from iac_node_forge.domain.server_option import ServerOption
 
@@ -76,3 +79,38 @@ class ProvisionCase:
     reserves_identifier: bool
     # Whether the provider imposes a commitment it must state before creation.
     states_cost: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RemovalCase:
+    """A provider seen through the removal port, with servers to remove.
+
+    Every variant (fake, Proxmox VE, Contabo) fills the same fields, so one set
+    of removal tests runs against all of them. Server ``101`` is stopped and can
+    be removed; ``blocked_id`` is a server the provider blocks once
+    ``prepare_blocked`` has run.
+    """
+
+    name: str
+    provider: ProviderPort
+    removal: ServerRemovalPort
+    configuration: ProviderConfiguration
+    secret_values: tuple[str, ...]
+    kind: RemovalKind
+    removable_id: str
+    blocked_id: str
+    expected_block: RemovalBlock
+    # Brings the blocked server into the state the provider blocks.
+    prepare_blocked: Callable[[], None]
+    # Makes every later removal be rejected by the provider (403).
+    reject_removal: Callable[[], None]
+    # What a rejection tells the user about the missing permission, or None.
+    rejection_hint: str | None
+    # Makes every later removal end in failure at the provider.
+    fail_operations: Callable[[], None]
+    # Makes the answer to every later removal request get lost (a timeout).
+    lose_answers: Callable[[], None]
+    # The write requests the variant's backend received, as (method, target).
+    write_requests: Callable[[], list[tuple[str, str]]]
+    # The removal requests the allow-list permits.
+    allowed_write_requests: frozenset[tuple[str, str]]

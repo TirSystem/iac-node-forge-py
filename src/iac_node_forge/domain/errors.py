@@ -34,7 +34,12 @@ class OperationStateError(DomainError):
 
 
 class OperationTextTooLongError(DomainError):
-    """The detail or the provider reference of an operation exceeds its bound."""
+    """The detail, consequence or provider reference of an operation exceeds its
+    bound."""
+
+
+class ManagedServerEndError(DomainError):
+    """A managed-server record has only one of its end time and ending operation."""
 
 
 class BootstrapHintTooLongError(DomainError):

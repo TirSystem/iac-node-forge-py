@@ -11,6 +11,7 @@ from iac_node_forge.application.capabilities import (
     LIST_SERVERS,
     POWER_CAPABILITIES,
     PROVISION_SERVER,
+    REMOVE_SERVER,
 )
 from iac_node_forge.application.errors import (
     CredentialEntryInvalidError,
@@ -21,14 +22,17 @@ from iac_node_forge.application.errors import (
     ProviderError,
     ProvisionIntentNotFoundError,
     ProvisionUnsupportedError,
+    RemovalUnsupportedError,
     ServerNotFoundError,
     UnknownOptionKindError,
     UnsupportedProviderError,
 )
 from iac_node_forge.application.ports import (
     ProviderPort,
+    RemovalBlock,
     ServerPowerPort,
     ServerProvisionPort,
+    ServerRemovalPort,
 )
 from iac_node_forge.domain.access_result import AccessResult
 from iac_node_forge.domain.capability import Capability
@@ -52,6 +56,7 @@ from iac_node_forge.domain.provision_intent import (
     IntentState,
     ProvisionIntent,
 )
+from iac_node_forge.domain.removal_kind import RemovalKind
 from iac_node_forge.domain.server import Server
 from iac_node_forge.domain.server_option import ServerOption
 from iac_node_forge.domain.value_rule import ValueRule
@@ -210,6 +215,9 @@ class FakeProviderResolver:
         provision: ServerProvisionPort | None = None,
         provision_by_configuration: dict[ConfigurationId, ServerProvisionPort]
         | None = None,
+        removal: ServerRemovalPort | None = None,
+        removal_by_configuration: dict[ConfigurationId, ServerRemovalPort]
+        | None = None,
     ) -> None:
         self._default = default
         self._by_configuration = by_configuration or {}
@@ -217,9 +225,12 @@ class FakeProviderResolver:
         self._power_by_configuration = power_by_configuration or {}
         self._provision = provision
         self._provision_by_configuration = provision_by_configuration or {}
+        self._removal = removal
+        self._removal_by_configuration = removal_by_configuration or {}
         self.resolved: list[ConfigurationId] = []
         self.power_resolved: list[ConfigurationId] = []
         self.provision_resolved: list[ConfigurationId] = []
+        self.removal_resolved: list[ConfigurationId] = []
 
     def provider_for(self, configuration: ProviderConfiguration) -> ProviderPort:
         self.resolved.append(configuration.configuration_id)
@@ -250,6 +261,18 @@ class FakeProviderResolver:
         if isinstance(provider, ServerProvisionPort):
             return provider
         raise UnsupportedProviderError("the fake provider cannot create servers")
+
+    def removal_for(self, configuration: ProviderConfiguration) -> ServerRemovalPort:
+        self.removal_resolved.append(configuration.configuration_id)
+        key = configuration.configuration_id
+        if key in self._removal_by_configuration:
+            return self._removal_by_configuration[key]
+        if self._removal is not None:
+            return self._removal
+        provider = self._by_configuration.get(key, self._default)
+        if isinstance(provider, ServerRemovalPort):
+            return provider
+        raise UnsupportedProviderError("the fake provider cannot remove servers")
 
 
 class FakePowerProvider:
@@ -639,3 +662,149 @@ class FakeProvisionProvider(FakeProvider):
         identifier = self._next_identifier
         self._next_identifier += 1
         return identifier
+
+
+class FakeRemovalProvider(FakeProvider):
+    """Fake ProviderPort and ServerRemovalPort with scripted behaviour.
+
+    ``kind`` DESTROY blocks a running server and takes a destroyed server out
+    of ``list_servers``; CANCEL blocks a cancelled one and leaves a removed
+    server listed with the state ``cancelled``, as Contabo does. A request
+    returns a RUNNING operation; each ``operation_state`` call is one step, and
+    the operation ends after ``steps_to_finish`` steps. Every accepted request
+    is in ``requests`` as a server identifier; ``supported`` False leaves the
+    capability out, so a request is refused as unsupported.
+    """
+
+    def __init__(
+        self,
+        servers: tuple[Server, ...] = (),
+        kind: RemovalKind = RemovalKind.DESTROY,
+        supported: bool = True,
+        steps_to_finish: int = 2,
+        effective_date: str | None = "2026-11-18",
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
+        names = (LIST_SERVERS, LIST_SERVER_OPTIONS, INSPECT_SERVER)
+        super().__init__(
+            capabilities=frozenset(
+                Capability(name)
+                for name in (*names, *((REMOVE_SERVER,) if supported else ()))
+            ),
+            servers=servers,
+        )
+        self._kind = kind
+        self._supported = supported
+        self._steps_to_finish = steps_to_finish
+        self._effective_date = effective_date
+        self._clock = clock
+        self._rejection: ProviderError | None = None
+        self._operations_fail = False
+        self._answers_unknown = False
+        self._steps: dict[OperationId, int] = {}
+        self.requests: list[str] = []
+        self.reads: list[str] = []
+
+    def reject_with(self, error: ProviderError | None) -> None:
+        """Make removals fail with ``error``; None makes them succeed again."""
+        self._rejection = error
+
+    def answer_unknown(self) -> None:
+        """Make a removal end at once as UNKNOWN, as after a lost answer."""
+        self._answers_unknown = True
+
+    def make_operations_fail(self) -> None:
+        self._operations_fail = True
+
+    def removal_kind(self, configuration: ProviderConfiguration) -> RemovalKind:
+        self.reads.append("removal_kind")
+        return self._kind
+
+    def removal_block(
+        self, configuration: ProviderConfiguration, server: Server
+    ) -> RemovalBlock | None:
+        self.reads.append("removal_block")
+        if self._kind is RemovalKind.DESTROY and server.state == "running":
+            return RemovalBlock.RUNNING
+        if self._kind is RemovalKind.CANCEL and server.state == "cancelled":
+            return RemovalBlock.ALREADY_REMOVED
+        return None
+
+    def consequence(self, configuration: ProviderConfiguration, server: Server) -> str:
+        self.reads.append("consequence")
+        if self._kind is RemovalKind.DESTROY:
+            return f"This destroys server {server.server_identifier} now."
+        return (
+            f"This requests the cancellation of server {server.server_identifier}; "
+            "the contract runs on until the effective date the provider reports."
+        )
+
+    def request_removal(
+        self, configuration: ProviderConfiguration, server: Server
+    ) -> Operation:
+        if not self._supported:
+            raise RemovalUnsupportedError("remove_server is not supported")
+        started_at = self._clock()
+        operation = Operation(
+            operation_id=OperationId(uuid.uuid4().hex),
+            configuration_id=configuration.configuration_id,
+            server_identifier=server.server_identifier,
+            action=PowerAction.REMOVE,
+            state=OperationState.RUNNING,
+            started_at=started_at,
+            provider_reference=f"fake-remove-{len(self.requests) + 1}",
+        )
+        if self._rejection is not None:
+            return replace(operation, provider_reference=None).ended(
+                OperationState.FAILED, started_at, str(self._rejection)
+            )
+        self.requests.append(server.server_identifier)
+        if self._answers_unknown:
+            return operation.ended(
+                OperationState.UNKNOWN,
+                started_at,
+                "the request may have reached the provider",
+            )
+        self._steps[operation.operation_id] = 0
+        return operation
+
+    def operation_state(
+        self, configuration: ProviderConfiguration, operation: Operation
+    ) -> Operation:
+        if operation.has_ended:
+            return operation
+        steps = self._steps.get(operation.operation_id, 0) + 1
+        self._steps[operation.operation_id] = steps
+        if steps < self._steps_to_finish:
+            return operation
+        finished_at = max(self._clock(), operation.started_at)
+        if self._operations_fail:
+            return operation.ended(
+                OperationState.FAILED, finished_at, "the fake removal failed"
+            )
+        self._apply(operation)
+        return operation.ended(
+            OperationState.SUCCEEDED, finished_at, self._outcome_detail()
+        )
+
+    def _apply(self, operation: Operation) -> None:
+        if self._kind is RemovalKind.DESTROY:
+            self._servers = tuple(
+                s
+                for s in self._servers
+                if s.server_identifier != operation.server_identifier
+            )
+            return
+        self._servers = tuple(
+            replace(s, state="cancelled")
+            if s.server_identifier == operation.server_identifier
+            else s
+            for s in self._servers
+        )
+
+    def _outcome_detail(self) -> str | None:
+        if self._kind is RemovalKind.DESTROY:
+            return None
+        if self._effective_date is None:
+            return "cancelled, no date was reported"
+        return f"cancelled, effective {self._effective_date}"

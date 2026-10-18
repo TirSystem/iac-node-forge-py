@@ -5,12 +5,14 @@ shape, checks the ``Authorization: PVEAPIToken=`` header, can be told to fail,
 and records every request so a test can prove which writes were received.
 
 The only writes it accepts are the four power POSTs
-``/nodes/{node}/{qemu|lxc}/{vmid}/status/{start|shutdown|stop|reboot}`` and the
-two creations ``POST /nodes/{node}/{qemu|lxc}``; each answers a task
-identifier (UPID) whose status stays ``running`` for a number of reads and
-then becomes ``stopped`` with an exit status (a successful creation adds the
-guest to the resources then). Every other write verb or path answers 405 and
-is recorded.
+``/nodes/{node}/{qemu|lxc}/{vmid}/status/{start|shutdown|stop|reboot}``, the
+two creations ``POST /nodes/{node}/{qemu|lxc}`` and the deletion
+``DELETE /nodes/{node}/{qemu|lxc}/{vmid}``; each answers a task identifier
+(UPID) whose status stays ``running`` for a number of reads and then becomes
+``stopped`` with an exit status (a successful creation adds the guest to the
+resources then, a successful deletion takes it out). Like Proxmox VE, a
+deletion of a running guest is refused with 500. Every other write verb or path
+answers 405 and is recorded.
 """
 
 import json
@@ -35,6 +37,7 @@ _POWER_PATH = re.compile(
     r"/status/(?P<verb>start|shutdown|stop|reboot)"
 )
 _CREATE_PATH = re.compile(r"/nodes/(?P<node>[^/]+)/(?P<type>qemu|lxc)")
+_DELETE_PATH = re.compile(r"/nodes/(?P<node>[^/]+)/(?P<type>qemu|lxc)/(?P<vmid>\d+)")
 _FIRST_VMID = 100
 _STATUS_AFTER = {
     "start": "running",
@@ -63,6 +66,8 @@ class MockTask:
     exitstatus: str
     # The guest a creation adds to the resources when it ends with OK.
     creation: dict[str, Any] | None = None
+    # Whether the guest leaves the resources when a deletion ends with OK.
+    destroys: bool = False
 
 
 @dataclass(slots=True)
@@ -83,6 +88,10 @@ class MockProxmoxState:
     # A creation is carried out but its answer holds no task identifier, as when
     # the answer is lost: the guest exists at once and no task is created.
     create_answers_without_task: bool = False
+    # Answers every deletion with this status; reads still work.
+    delete_forced_status: int | None = None
+    # The query options of every deletion the mock accepted, in order.
+    deleted: list[dict[str, str]] = field(default_factory=list)
     # The form fields of every creation the mock accepted, in order.
     created: list[dict[str, str]] = field(default_factory=list)
     # Status reads that answer ``running`` before a task becomes ``stopped``.
@@ -137,7 +146,20 @@ class _Handler(BaseHTTPRequestHandler):
         self._reject_write("PATCH")
 
     def do_DELETE(self) -> None:  # noqa: N802
-        self._reject_write("DELETE")
+        state = self.server.state
+        parts = urlsplit(self.path)
+        state.requests.append(RecordedRequest("DELETE", parts.path))
+        match = _DELETE_PATH.fullmatch(parts.path.removeprefix(API_PREFIX))
+        if match is None:
+            self._reply(METHOD_NOT_ALLOWED, {"data": None})
+        elif self.headers.get("Authorization") != f"PVEAPIToken={state.token}":
+            self._reply(UNAUTHORIZED, {"data": None})
+        elif state.delete_forced_status is not None:
+            self._reply(state.delete_forced_status, {"data": None})
+        elif state.forced_status is not None:
+            self._reply(state.forced_status, {"data": None})
+        else:
+            self._start_delete_task(match, parse_qs(parts.query), state)
 
     def _reject_write(self, method: str) -> None:
         self.server.state.requests.append(
@@ -180,6 +202,38 @@ class _Handler(BaseHTTPRequestHandler):
             )
             self._reply(200, {"data": upid})
 
+    def _start_delete_task(
+        self,
+        match: re.Match[str],
+        query: dict[str, list[str]],
+        state: MockProxmoxState,
+    ) -> None:
+        node, guest_type, vmid = match["node"], match["type"], match["vmid"]
+        known = [
+            item
+            for item in state.resources
+            if str(item.get("vmid")) == vmid
+            and item.get("node") == node
+            and item.get("type") == guest_type
+        ]
+        if not known or known[0].get("status") == "running":
+            self._reply(SERVER_ERROR, {"data": None})
+            return
+        state.deleted.append({key: values[0] for key, values in query.items()})
+        upid = (
+            f"UPID:{node}:{len(state.tasks) + 1:08X}:00000000:00000000:"
+            f"{guest_type}destroy:{vmid}:root@pam!forge:"
+        )
+        state.tasks[upid] = MockTask(
+            node,
+            vmid,
+            "destroy",
+            state.task_polls_before_end,
+            state.task_exitstatus,
+            destroys=True,
+        )
+        self._reply(200, {"data": upid})
+
     def _start_power_task(self, match: re.Match[str], state: MockProxmoxState) -> None:
         node, vmid, verb = match["node"], match["vmid"], match["verb"]
         known = [
@@ -212,6 +266,12 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if task.exitstatus == "OK" and task.creation is not None:
             state.resources.append(task.creation)
+        elif task.exitstatus == "OK" and task.destroys:
+            state.resources = [
+                item
+                for item in state.resources
+                if str(item.get("vmid")) != task.guest_id
+            ]
         elif task.exitstatus == "OK":
             for item in state.resources:
                 if str(item.get("vmid")) == task.guest_id:

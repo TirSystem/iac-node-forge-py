@@ -67,7 +67,7 @@ class ControlServerPower:
 
         The outcome is READY when the action can be asked for, so the client
         can state what will happen, or the reason it cannot. Raises
-        NotAPowerActionError for PROVISION, which is not a power action.
+        NotAPowerActionError for PROVISION and REMOVE, which are not power actions.
         """
         _require_power_action(action)
         return self._check(configuration, server_identifier, action).result
@@ -87,8 +87,8 @@ class ControlServerPower:
         that rejects the request yields REJECTED with a FAILED operation, and
         the request is not repeated. Raises the use case and provider errors
         of the reads (configuration not found, unreachable, rejected
-        credentials). Raises NotAPowerActionError for PROVISION, which is not a
-        power action; nothing is read or sent then.
+        credentials). Raises NotAPowerActionError for PROVISION and REMOVE, which
+        are not power actions; nothing is read or sent then.
         """
         _require_power_action(action)
         checked = self._check(configuration, server_identifier, action)

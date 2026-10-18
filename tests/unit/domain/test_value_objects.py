@@ -15,12 +15,14 @@ from iac_node_forge.domain.errors import (
     CredentialsNotPersistableError,
     DomainError,
     EmptyValueError,
+    ManagedServerEndError,
     MissingCredentialError,
     MissingReasonError,
     NaiveTimestampError,
     NotSingleCredentialError,
 )
 from iac_node_forge.domain.managed_server_record import ManagedServerRecord
+from iac_node_forge.domain.operation import OperationId
 from iac_node_forge.domain.provider_configuration import (
     ConfigurationId,
     ProviderConfiguration,
@@ -259,3 +261,53 @@ def test_managed_server_record_rejects_empty_server_identifier() -> None:
 def test_managed_server_record_rejects_empty_configuration_id() -> None:
     with pytest.raises(EmptyValueError):
         ManagedServerRecord(ConfigurationId(""), "1", datetime.now(UTC))
+
+
+def test_managed_server_record_is_not_ended_by_default() -> None:
+    record = ManagedServerRecord(ConfigurationId("c1"), "1", datetime.now(UTC))
+
+    assert record.ended_at is None
+    assert record.ended_by_operation_id is None
+    assert not record.is_ended
+
+
+def test_managed_server_record_is_ended_with_the_time_and_the_operation() -> None:
+    recorded = datetime(2026, 10, 1, tzinfo=UTC)
+    ended_at = datetime(2026, 10, 18, tzinfo=UTC)
+
+    ended = ManagedServerRecord(ConfigurationId("c1"), "1", recorded).ended(
+        ended_at, OperationId("op-1")
+    )
+
+    assert ended.is_ended
+    assert ended.ended_at == ended_at
+    assert ended.ended_by_operation_id == "op-1"
+    assert ended.recorded_at == recorded
+
+
+def test_managed_server_record_rejects_an_end_time_without_an_operation() -> None:
+    with pytest.raises(ManagedServerEndError):
+        ManagedServerRecord(
+            ConfigurationId("c1"), "1", datetime.now(UTC), ended_at=datetime.now(UTC)
+        )
+
+
+def test_managed_server_record_rejects_an_operation_without_an_end_time() -> None:
+    with pytest.raises(ManagedServerEndError):
+        ManagedServerRecord(
+            ConfigurationId("c1"),
+            "1",
+            datetime.now(UTC),
+            ended_by_operation_id=OperationId("op-1"),
+        )
+
+
+def test_managed_server_record_rejects_a_naive_end_time() -> None:
+    with pytest.raises(NaiveTimestampError):
+        ManagedServerRecord(
+            ConfigurationId("c1"),
+            "1",
+            datetime.now(UTC),
+            ended_at=datetime(2026, 1, 1),
+            ended_by_operation_id=OperationId("op-1"),
+        )

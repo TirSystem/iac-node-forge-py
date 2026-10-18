@@ -1,12 +1,13 @@
-"""ProviderPort, ServerPowerPort and ServerProvisionPort for Contabo.
+"""The four ports (read, power, provision, removal) for Contabo.
 
 The four credential values are exchanged for a bearer token with the OAuth2
 password grant. The token is kept only in memory, reused, and replaced once
 after a 401. Every API call carries a fresh ``x-request-id``. Every API call
 is a GET except the four power POSTs of ``_POWER_ACTION_PATH``
 (``/actions/start``, ``shutdown``, ``stop`` and ``restart`` of one instance)
-and the instance creation (``POST /v1/compute/instances``, ADR-0007); the
-only other request is the token POST (ADR-0006). Credentials: ADR-0005.
+the instance creation (``POST /v1/compute/instances``, ADR-0007) and the
+cancellation (``POST /v1/compute/instances/{id}/cancel``, ADR-0008); the only
+other request is the token POST (ADR-0006). Credentials: ADR-0005.
 """
 
 import uuid
@@ -30,6 +31,7 @@ from iac_node_forge.application.errors import (
     ServerNotFoundError,
     UnknownOptionKindError,
 )
+from iac_node_forge.application.ports.server_removal_port import RemovalBlock
 from iac_node_forge.domain.access_result import AccessResult
 from iac_node_forge.domain.capability import Capability
 from iac_node_forge.domain.credentials import Credentials
@@ -39,11 +41,12 @@ from iac_node_forge.domain.operation import Operation, OperationState
 from iac_node_forge.domain.power_action import PowerAction
 from iac_node_forge.domain.provider_configuration import ProviderConfiguration
 from iac_node_forge.domain.provider_kind import ProviderKind
+from iac_node_forge.domain.removal_kind import RemovalKind
 from iac_node_forge.domain.server import Server
 from iac_node_forge.domain.server_option import ServerOption
 from iac_node_forge.domain.value_rule import ValueRule
 from iac_node_forge.infrastructure import _http, _power
-from iac_node_forge.infrastructure.contabo import _provision
+from iac_node_forge.infrastructure.contabo import _provision, _removal
 
 DEFAULT_AUTH_URL = (
     "https://auth.contabo.com/auth/realms/contabo/protocol/openid-connect/token"
@@ -166,7 +169,7 @@ class ContaboProvider:
     def discover_capabilities(
         self, configuration: ProviderConfiguration
     ) -> frozenset[Capability]:
-        """Return the read, the four power and the provision capabilities."""
+        """Return the read, the four power, provision and remove capabilities."""
         return frozenset(
             Capability(name)
             for name in (
@@ -213,6 +216,15 @@ class ContaboProvider:
         text = server_identifier.strip()
         if not (text.isascii() and text.isdecimal()):
             raise ServerNotFoundError(f"No server {server_identifier!r} at Contabo")
+        return _to_server(self._instance_item(configuration, server_identifier))
+
+    def _instance_item(
+        self, configuration: ProviderConfiguration, server_identifier: str
+    ) -> Mapping[str, _Json]:
+        """Read one instance as the provider reports it, with its extra fields."""
+        text = server_identifier.strip()
+        if not (text.isascii() and text.isdecimal()):
+            raise ServerNotFoundError(f"No server {server_identifier!r} at Contabo")
         response = self._authorised_get(
             self._session,
             configuration.address,
@@ -224,7 +236,7 @@ class ContaboProvider:
         items = _data_items(_body(response))
         if not items:
             raise ServerNotFoundError(f"No server {server_identifier!r} at Contabo")
-        return _to_server(items[0])
+        return items[0]
 
     def request_power(
         self,
@@ -237,8 +249,8 @@ class ContaboProvider:
         A provider failure (401 after renewal, 403, 429, 5xx, unreachable)
         gives a FAILED operation. Raises ServerNotFoundError when the
         identifier is not a number or the instance does not exist, and
-        PowerActionUnsupportedError for PROVISION, which is not a power
-        action.
+        PowerActionUnsupportedError for PROVISION and REMOVE, which are not
+        power actions.
         """
         if action not in _POWER_ACTION_PATH:
             raise PowerActionUnsupportedError(f"{action.value} is not a power action")
@@ -323,10 +335,74 @@ class ContaboProvider:
             return replace(running, detail=_NO_INSTANCE_NAMED)
         return running
 
+    def removal_kind(self, configuration: ProviderConfiguration) -> RemovalKind:
+        """Contabo cancels, it does not delete: always CANCEL."""
+        return RemovalKind.CANCEL
+
+    def removal_block(
+        self, configuration: ProviderConfiguration, server: Server
+    ) -> RemovalBlock | None:
+        """Return ALREADY_REMOVED for a cancelled instance, else None.
+
+        A running instance is not blocked: Contabo cancels it as it is.
+        """
+        return _removal.block(server)
+
+    def consequence(self, configuration: ProviderConfiguration, server: Server) -> str:
+        """State that a cancellation is requested and the contract runs on."""
+        return _removal.consequence(server)
+
+    def request_removal(
+        self, configuration: ProviderConfiguration, server: Server
+    ) -> Operation:
+        """POST the one cancellation; the date it reports is kept in the detail.
+
+        The operation is RUNNING until the instance is read as ``cancelled``;
+        its detail holds the cancel date the answer gave, or says that none was
+        reported. A rejection (401 after renewal, 403, 429, 4xx) gives a FAILED
+        operation; a timeout or a 5xx gives an UNKNOWN one, because the
+        cancellation may have been recorded. Raises ServerNotFoundError when
+        the identifier is not a number or the instance does not exist.
+        """
+        started_at = self._clock()
+        identifier = server.server_identifier
+        text = identifier.strip()
+        if not (text.isascii() and text.isdecimal()):
+            raise ServerNotFoundError(f"No server {identifier!r} at Contabo")
+        path = _removal.cancel_path(INSTANCES_PATH, int(text))
+        try:
+            response = self._authorised_post(self._session, configuration.address, path)
+            if response.status_code == _STATUS_NOT_FOUND:
+                raise ServerNotFoundError(f"No server {identifier!r} at Contabo")
+            items = _data_items(_body(response, _ACCEPTED_WRITE_STATUSES))
+        except ServerNotFoundError:
+            raise
+        except (ProviderTimeoutError, ProviderServiceError) as error:
+            return _power.unknown_operation(
+                configuration,
+                identifier,
+                PowerAction.REMOVE,
+                started_at,
+                f"the request may have reached the provider: {error}",
+            )
+        except ProviderError as error:
+            return _power.failed_operation(
+                configuration, identifier, PowerAction.REMOVE, started_at, str(error)
+            )
+        running = _power.running_operation(
+            configuration, identifier, PowerAction.REMOVE, started_at, None
+        )
+        date = _removal.cancel_date(items[0]) if items else None
+        return replace(running, detail=_removal.requested_detail(date))
+
     def operation_state(
         self, configuration: ProviderConfiguration, operation: Operation
     ) -> Operation:
         """Read the instance status once and judge it against the action.
+
+        A removal succeeds when the instance is ``cancelled``, with the cancel
+        date the provider reports in the detail (or the words that none was
+        reported); ``error`` fails; any other status is still RUNNING.
 
         A provision succeeds when the instance is ``running``, fails when its
         status is ``error`` and is otherwise still RUNNING (``provisioning``,
@@ -341,7 +417,8 @@ class ContaboProvider:
         """
         if operation.has_ended or operation.server_identifier is None:
             return operation
-        status = self.get_server(configuration, operation.server_identifier).state
+        item = self._instance_item(configuration, operation.server_identifier)
+        status = _to_server(item).state
         if status == _STATUS_ERROR:
             return _power.end_operation(
                 operation,
@@ -351,6 +428,8 @@ class ContaboProvider:
             )
         if operation.action is PowerAction.PROVISION:
             return self._judge_provision(operation, status)
+        if operation.action is PowerAction.REMOVE:
+            return self._judge_removal(operation, status, item)
         if operation.action is PowerAction.RESTART:
             return self._judge_restart(operation, status)
         if status == _TARGET_STATUS[operation.action]:
@@ -363,6 +442,16 @@ class ContaboProvider:
         if status == _STATUS_RUNNING:
             return _power.end_operation(
                 operation, OperationState.SUCCEEDED, self._clock, None
+            )
+        return operation
+
+    def _judge_removal(
+        self, operation: Operation, status: str, item: Mapping[str, _Json]
+    ) -> Operation:
+        if status == _removal.STATUS_CANCELLED:
+            detail = _removal.cancelled_detail(_removal.cancel_date(item))
+            return _power.end_operation(
+                operation, OperationState.SUCCEEDED, self._clock, detail
             )
         return operation
 
