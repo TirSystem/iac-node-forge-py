@@ -115,6 +115,7 @@ class FakeConfigurationStore:
     def __init__(self, managed: tuple[ManagedServerRecord, ...] = ()) -> None:
         self._configurations: dict[ConfigurationId, ProviderConfiguration] = {}
         self.managed = managed
+        self.ended: list[tuple[ConfigurationId, str, OperationId]] = []
 
     def save(self, configuration: ProviderConfiguration) -> None:
         self._configurations[configuration.configuration_id] = configuration
@@ -125,12 +126,37 @@ class FakeConfigurationStore:
     def managed_servers(
         self, configuration_id: ConfigurationId
     ) -> tuple[ManagedServerRecord, ...]:
-        return tuple(r for r in self.managed if r.configuration_id == configuration_id)
+        return tuple(
+            r
+            for r in self.managed
+            if r.configuration_id == configuration_id and not r.is_ended
+        )
 
     def save_managed_server(self, record: ManagedServerRecord) -> None:
         key = (record.configuration_id, record.server_identifier)
-        if key not in {(r.configuration_id, r.server_identifier) for r in self.managed}:
+        if key not in {
+            (r.configuration_id, r.server_identifier)
+            for r in self.managed
+            if not r.is_ended
+        }:
             self.managed = (*self.managed, record)
+
+    def end_managed_server(
+        self,
+        configuration_id: ConfigurationId,
+        server_identifier: str,
+        ended_at: datetime,
+        operation_id: OperationId,
+    ) -> None:
+        self.ended.append((configuration_id, server_identifier, operation_id))
+        self.managed = tuple(
+            r.ended(ended_at, operation_id)
+            if (r.configuration_id, r.server_identifier)
+            == (configuration_id, server_identifier)
+            and not r.is_ended
+            else r
+            for r in self.managed
+        )
 
 
 class FakeCredentialStore:

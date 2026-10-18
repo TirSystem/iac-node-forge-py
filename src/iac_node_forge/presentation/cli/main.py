@@ -18,6 +18,7 @@ from iac_node_forge.presentation.cli.commands import (
     server,
     server_power,
     server_provision,
+    server_remove,
     servers,
 )
 from iac_node_forge.presentation.cli.composition import build_services
@@ -45,7 +46,10 @@ exit codes:
      provider rejected the request, or the operation ended failed or unknown;
      for 'server define' also: the description is not valid (it is not saved);
      for 'server provision' also: the description is invalid or unsupported, a
-     server of that name exists or an earlier request for it is not finished
+     server of that name exists or an earlier request for it is not finished;
+     for 'server remove' also: removal is unsupported, the server is running or
+     already removed, the typed identifier is wrong, the confirmation is missing
+     or refused, or the provider rejected the request
   2  usage error
 
 power commands (they change the state of a server):
@@ -66,6 +70,13 @@ provisioning (creating a server is a write and may commit the account):
   server definitions <configuration> [--check]
       lists the desired configurations
       see 'iac-node-forge server provision --help'
+
+removal (deleting or cancelling a server is a write and cannot be undone):
+  server remove <configuration> <identifier> [--yes] [--confirm-unmanaged ID]
+      states what the provider does (destroy now, or cancel with an effective
+      date), asks you to type the identifier, sends one request and follows the
+      operation; an unmanaged server needs the identifier typed twice;
+      a running server is refused, never stopped; see 'server remove --help'
 """
 
 
@@ -74,8 +85,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROGRAM,
         description="Command-line client for Proxmox VE and Contabo servers: read "
-        "servers and options, define and provision servers, and start, shut down, "
-        "stop or restart a server.",
+        "servers and options, define and provision servers, start, shut down, stop "
+        "or restart a server, and remove a server.",
         epilog=_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -130,6 +141,8 @@ def _server_group_parser(words: Sequence[str]) -> argparse.ArgumentParser | None
         return server_power.build_parser()
     if server_provision.is_provision_request(words):
         return server_provision.build_parser()
+    if server_remove.is_remove_request(words):
+        return server_remove.build_parser()
     return None
 
 

@@ -243,6 +243,7 @@ def test_the_operation_summary_has_the_record_fields_and_no_other() -> None:
         "finished_at",
         "provider_reference",
         "detail",
+        "consequence",
     }
 
 

@@ -28,6 +28,7 @@ import os
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -108,6 +109,15 @@ class _SingleConfigurationStore:
 
     def save_managed_server(self, record: ManagedServerRecord) -> None:
         raise AssertionError("a live power test never records a managed server")
+
+    def end_managed_server(
+        self,
+        configuration_id: ConfigurationId,
+        server_identifier: str,
+        ended_at: datetime,
+        operation_id: OperationId,
+    ) -> None:
+        raise AssertionError("a live power test never ends a managed server")
 
 
 class _FixedResolver:

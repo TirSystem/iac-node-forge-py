@@ -30,5 +30,7 @@ def write_operation(
         write_detail_line(stream, "Reference", operation.provider_reference)
     if operation.detail is not None:
         write_detail_line(stream, "Detail", operation.detail)
+    if operation.consequence is not None:
+        write_detail_line(stream, "Consequence", operation.consequence)
     if server_state is not None:
         write_detail_line(stream, "Server state", server_state)

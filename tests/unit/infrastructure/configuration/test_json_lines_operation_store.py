@@ -42,6 +42,7 @@ FIELDS = {
     "finished_at",
     "provider_reference",
     "detail",
+    "consequence",
 }
 
 

@@ -9,6 +9,7 @@ from iac_node_forge.domain.power_action import PowerAction
 from iac_node_forge.domain.provider_configuration import ConfigurationId
 from iac_node_forge.domain.provider_kind import ProviderKind
 from iac_node_forge.domain.provider_value import ProviderValue
+from iac_node_forge.domain.removal_kind import RemovalKind
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,15 +105,18 @@ class ServerListing:
 
 @dataclass(frozen=True, slots=True)
 class Confirmation:
-    """What the user confirmed for one power action.
+    """What the user confirmed for one power action or one removal.
 
     ``given`` is the yes to the stated action. ``typed_identifier`` is the
-    server identifier the user retyped; it is required only for a server this
-    client does not manage.
+    server identifier the user retyped: for a power action it is required only
+    for a server this client does not manage, for a removal always.
+    ``unmanaged_identifier`` is the identifier typed again, the extra
+    confirmation a removal of a server this client does not manage needs.
     """
 
     given: bool
     typed_identifier: str | None = None
+    unmanaged_identifier: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +132,7 @@ class OperationSummary:
     finished_at: datetime | None
     provider_reference: str | None
     detail: str | None
+    consequence: str | None = None
 
     @classmethod
     def of(cls, operation: Operation) -> "OperationSummary":
@@ -142,6 +147,7 @@ class OperationSummary:
             operation.finished_at,
             operation.provider_reference,
             operation.detail,
+            operation.consequence,
         )
 
 
@@ -265,3 +271,71 @@ class ProvisionResult:
     operation: OperationSummary | None = None
     server_identifier: str | None = None
     state_left: str | None = None
+
+
+class RemovalOutcome(Enum):
+    """How a preview, a request or a completion of a removal ended.
+
+    READY is the answer of a preview and means every precondition but the
+    confirmation holds. REQUESTED means a removal request was sent and its
+    operation is recorded. COMPLETED means the operation succeeded (the managed
+    record is ended when there was one). INCOMPLETE means the operation is
+    unfinished or unknown. REJECTED means the provider refused the request or
+    the operation ended as failed. In UNSUPPORTED, NOT_FOUND, RUNNING_REFUSED,
+    ALREADY_REMOVED, NOT_CONFIRMED and IDENTIFIER_MISMATCH no request was sent
+    (NOT_FOUND is also the answer for an operation that is not a removal).
+    """
+
+    READY = "ready"
+    REQUESTED = "requested"
+    COMPLETED = "completed"
+    INCOMPLETE = "incomplete"
+    REJECTED = "rejected"
+    UNSUPPORTED = "unsupported"
+    NOT_FOUND = "not_found"
+    RUNNING_REFUSED = "running_refused"
+    ALREADY_REMOVED = "already_removed"
+    NOT_CONFIRMED = "not_confirmed"
+    IDENTIFIER_MISMATCH = "identifier_mismatch"
+
+
+@dataclass(frozen=True, slots=True)
+class RemovalPreview:
+    """What a removal would do, or why nothing can be removed.
+
+    ``server_name``, ``server_state`` and ``kind`` are None when the outcome is
+    reached before the server or the provider's removal kind is read;
+    ``consequence`` is empty unless the outcome is READY.
+    """
+
+    outcome: RemovalOutcome
+    reason: str
+    provider_name: str
+    provider_kind: ProviderKind
+    configuration_id: ConfigurationId
+    server_identifier: str
+    server_name: str | None = None
+    server_state: str | None = None
+    managed: bool = False
+    kind: RemovalKind | None = None
+    consequence: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class RemovalResult:
+    """The answer to a request for, or the completion of, a removal.
+
+    ``reason`` says why nothing was sent, why the provider refused, or what is
+    unfinished; ``operation`` is set once a request was recorded;
+    ``consequence`` is the text recorded with it; ``state_left`` says what the
+    provider holds afterwards (for a cancellation the effective date it
+    reported); ``managed_ended`` is true when the managed-server record was
+    ended by this call.
+    """
+
+    outcome: RemovalOutcome
+    reason: str = ""
+    operation: OperationSummary | None = None
+    consequence: str = ""
+    state_left: str | None = None
+    managed_ended: bool = False
