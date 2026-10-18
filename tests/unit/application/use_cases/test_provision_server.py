@@ -282,6 +282,25 @@ def test_a_retry_after_an_unknown_outcome_meets_the_pending_intent() -> None:
     assert len(setup.operations.saved) == 2
 
 
+def test_a_request_whose_answer_is_lost_keeps_the_intent_pending() -> None:
+    fake = provider()
+    fake.answer_unknown()
+    setup = build(fake)
+
+    first = setup.request()
+    retry = setup.request()
+
+    assert first.outcome is ProvisionOutcome.REQUESTED
+    assert first.operation is not None
+    assert first.operation.state is OperationState.UNKNOWN
+    [intent] = [
+        i for i in setup.intents.intents.values() if i.state is IntentState.PENDING
+    ]
+    assert intent.operation_id == first.operation.operation_id
+    assert retry.outcome is ProvisionOutcome.INTENT_PENDING
+    assert len(setup.fake.requests) == 1
+
+
 def test_a_retry_while_the_first_request_is_running_is_refused() -> None:
     setup = build()
     setup.request()

@@ -5,6 +5,12 @@ from dataclasses import replace
 
 import pytest
 
+from iac_node_forge.application.errors import (
+    ProviderError,
+    ProviderRateLimitError,
+    ProviderServiceError,
+    ProviderTimeoutError,
+)
 from iac_node_forge.domain.credentials import Credentials
 from iac_node_forge.domain.operation import Operation, OperationState
 from iac_node_forge.domain.power_action import PowerAction
@@ -206,7 +212,7 @@ def test_an_accepted_request_that_names_no_instance_stays_running_and_says_so(
 
 @pytest.mark.parametrize(
     ("status", "words"),
-    [(429, "rate limit"), (500, "service error"), (403, "not permitted")],
+    [(429, "rate limit"), (403, "not permitted")],
 )
 def test_a_provider_refusal_gives_a_failed_operation_without_a_server(
     mock_contabo: MockContaboServer,
@@ -224,6 +230,20 @@ def test_a_provider_refusal_gives_a_failed_operation_without_a_server(
     assert operation.detail is not None
     assert words in operation.detail
     assert len(mock_contabo.state.instances) == 2
+
+
+def test_a_server_error_answer_is_unknown_because_the_instance_may_exist(
+    mock_contabo: MockContaboServer,
+    provider: ContaboProvider,
+    configuration: ProviderConfiguration,
+) -> None:
+    mock_contabo.state.create_forced_status = 500
+
+    operation = create(provider, configuration)
+
+    assert operation.state is OperationState.UNKNOWN
+    assert operation.detail is not None
+    assert "service error" in operation.detail
 
 
 @pytest.mark.parametrize("missing", ["region", "product", "period"])
@@ -263,3 +283,42 @@ def test_a_period_outside_the_three_gives_a_failed_operation_and_sends_nothing(
 
     assert operation.state is OperationState.FAILED
     assert mock_contabo.write_requests == []
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ProviderTimeoutError("the provider did not answer within 2.0 seconds"),
+        ProviderServiceError("Contabo answered 503: service error"),
+    ],
+)
+def test_a_timeout_or_a_server_error_on_the_create_request_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: ContaboProvider,
+    configuration: ProviderConfiguration,
+    error: ProviderError,
+) -> None:
+    def fail(*args: object, **kwargs: object) -> object:
+        raise error
+
+    monkeypatch.setattr(provider, "_authorised_post", fail)
+
+    operation = create(provider, configuration)
+
+    assert operation.state is OperationState.UNKNOWN
+    assert operation.server_identifier is None
+    assert operation.detail is not None
+    assert "may have reached the provider" in operation.detail
+
+
+def test_a_rate_limit_on_the_create_request_is_a_plain_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: ContaboProvider,
+    configuration: ProviderConfiguration,
+) -> None:
+    def limited(*args: object, **kwargs: object) -> object:
+        raise ProviderRateLimitError("Contabo answered 429")
+
+    monkeypatch.setattr(provider, "_authorised_post", limited)
+
+    assert create(provider, configuration).state is OperationState.FAILED

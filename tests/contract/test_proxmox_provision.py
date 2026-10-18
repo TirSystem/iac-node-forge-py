@@ -4,6 +4,10 @@ from dataclasses import replace
 
 import pytest
 
+from iac_node_forge.application.errors import (
+    ProviderTimeoutError,
+    ProviderUnreachableError,
+)
 from iac_node_forge.domain.credentials import Credentials
 from iac_node_forge.domain.desired_configuration import DesiredConfiguration
 from iac_node_forge.domain.operation import OperationState
@@ -300,3 +304,40 @@ def test_an_unknown_kind_gives_a_failed_operation_and_sends_nothing(
 
     assert operation.state is OperationState.FAILED
     assert mock_proxmox.write_requests == []
+
+
+def test_a_timeout_on_the_create_request_is_unknown_and_names_the_vmid(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: ProxmoxProvider,
+    configuration: ProviderConfiguration,
+) -> None:
+    def time_out(*args: object, **kwargs: object) -> object:
+        raise ProviderTimeoutError("the provider did not answer within 2.0 seconds")
+
+    monkeypatch.setattr(provider, "_post", time_out)
+
+    operation = provider.request_provision(
+        configuration, PROXMOX_DESIRED, SERVER_NAME, "101"
+    )
+
+    assert operation.state is OperationState.UNKNOWN
+    assert operation.server_identifier == "101"
+    assert operation.detail is not None
+    assert "may have reached the provider" in operation.detail
+
+
+def test_a_refused_connection_on_the_create_request_is_a_plain_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: ProxmoxProvider,
+    configuration: ProviderConfiguration,
+) -> None:
+    def refuse(*args: object, **kwargs: object) -> object:
+        raise ProviderUnreachableError("the provider could not be reached")
+
+    monkeypatch.setattr(provider, "_post", refuse)
+
+    operation = provider.request_provision(
+        configuration, PROXMOX_DESIRED, SERVER_NAME, "101"
+    )
+
+    assert operation.state is OperationState.FAILED

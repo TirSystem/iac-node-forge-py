@@ -534,6 +534,7 @@ class FakeProvisionProvider(FakeProvider):
         self._clock = clock
         self._rejection: ProviderError | None = None
         self._operations_fail = False
+        self._answers_unknown = False
         self._next_identifier = FAKE_FIRST_IDENTIFIER
         self._steps: dict[OperationId, int] = {}
         self._creating: dict[OperationId, Server] = {}
@@ -549,6 +550,10 @@ class FakeProvisionProvider(FakeProvider):
     def add_server(self, server: Server) -> None:
         """Add a server to the listing, as if it already existed."""
         self._servers = (*self._servers, server)
+
+    def answer_unknown(self) -> None:
+        """Make a creation end at once as UNKNOWN, as after a lost answer."""
+        self._answers_unknown = True
 
     def make_operations_fail(self) -> None:
         self._operations_fail = True
@@ -597,6 +602,13 @@ class FakeProvisionProvider(FakeProvider):
             return replace(
                 operation, server_identifier=None, provider_reference=None
             ).ended(OperationState.FAILED, started_at, str(self._rejection))
+        if self._answers_unknown:
+            self.requests.append((server_name, reserved_identifier))
+            return operation.ended(
+                OperationState.UNKNOWN,
+                started_at,
+                "the request may have reached the provider",
+            )
         self.requests.append((server_name, reserved_identifier))
         self._steps[operation.operation_id] = 0
         self._creating[operation.operation_id] = Server(

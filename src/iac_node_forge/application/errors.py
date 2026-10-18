@@ -16,6 +16,10 @@ class ProviderUnreachableError(ProviderError):
     """The provider could not be reached: connection, TLS or timeout failure."""
 
 
+class ProviderTimeoutError(ProviderUnreachableError):
+    """The provider did not answer in time; a request may still have reached it."""
+
+
 class ProviderRateLimitError(ProviderError):
     """The provider refused the request because a rate limit was reached."""
 
