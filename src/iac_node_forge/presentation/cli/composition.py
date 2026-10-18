@@ -10,7 +10,9 @@ from iac_node_forge.domain.credentials import Credentials
 from iac_node_forge.domain.provider_kind import ProviderKind
 from iac_node_forge.infrastructure.configuration import (
     JsonLinesConfigurationStore,
+    JsonLinesDesiredConfigurationStore,
     JsonLinesOperationStore,
+    JsonLinesProvisionIntentStore,
     default_configuration_path,
 )
 from iac_node_forge.infrastructure.contabo import (
@@ -77,6 +79,8 @@ def build_services(
     return CliServices(
         configurations=JsonLinesConfigurationStore(path),
         operations=JsonLinesOperationStore(path),
+        desired_configurations=JsonLinesDesiredConfigurationStore(path),
+        provision_intents=JsonLinesProvisionIntentStore(path),
         credential_store=PlatformCredentialStore(),
         credential_prompt=ConsoleCredentialPrompt(),
         provider_factory=provider_factory,

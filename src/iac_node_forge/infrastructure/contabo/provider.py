@@ -26,6 +26,7 @@ from iac_node_forge.application.errors import (
     ProviderPageLimitError,
     ProviderRateLimitError,
     ProviderServiceError,
+    ProviderTimeoutError,
     ServerNotFoundError,
     UnknownOptionKindError,
 )
@@ -302,6 +303,14 @@ class ContaboProvider:
             )
             instance_id = _created_instance_id(
                 _body(response, _ACCEPTED_WRITE_STATUSES)
+            )
+        except (ProviderTimeoutError, ProviderServiceError) as error:
+            return _power.unknown_operation(
+                configuration,
+                None,
+                PowerAction.PROVISION,
+                started_at,
+                f"the request may have reached the provider: {error}",
             )
         except ProviderError as error:
             return _power.failed_operation(

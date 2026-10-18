@@ -24,6 +24,7 @@ from iac_node_forge.application.errors import (
     PowerActionUnsupportedError,
     ProviderAuthenticationError,
     ProviderError,
+    ProviderTimeoutError,
     ServerNotFoundError,
     UnknownOptionKindError,
 )
@@ -248,6 +249,14 @@ class ProxmoxProvider:
             request = _provision.build_request(desired, server_name, vmid or "")
             upid = self._post(
                 configuration.address, request.path, _provision.PERMISSION, request.form
+            )
+        except ProviderTimeoutError as error:
+            return _power.unknown_operation(
+                configuration,
+                vmid,
+                PowerAction.PROVISION,
+                started_at,
+                f"the request may have reached the provider: {error}",
             )
         except ProviderError as error:
             return _power.failed_operation(

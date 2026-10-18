@@ -16,6 +16,10 @@ class ProviderUnreachableError(ProviderError):
     """The provider could not be reached: connection, TLS or timeout failure."""
 
 
+class ProviderTimeoutError(ProviderUnreachableError):
+    """The provider did not answer in time; a request may still have reached it."""
+
+
 class ProviderRateLimitError(ProviderError):
     """The provider refused the request because a rate limit was reached."""
 
@@ -101,6 +105,14 @@ class AmbiguousConfigurationError(UseCaseError):
 
 class OperationNotFoundError(UseCaseError):
     """No recorded operation has the given identifier."""
+
+
+class DesiredConfigurationNotFoundError(UseCaseError):
+    """No desired configuration has the given name for the provider configuration."""
+
+
+class ProvisionIntentNotFoundError(UseCaseError):
+    """No recorded provision intent has the given identifier."""
 
 
 class NoConfigurationError(UseCaseError):

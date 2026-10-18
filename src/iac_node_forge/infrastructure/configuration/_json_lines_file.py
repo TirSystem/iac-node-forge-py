@@ -6,7 +6,8 @@ reference, and an operation holds identifiers, states, times and bounded
 texts. Unknown record types and unknown fields are rejected on read.
 
 The file is read whole and written whole, so the stores that share it
-(configuration and operations) keep each other's records.
+(configuration, operations, desired configurations and intents) keep each
+other's records.
 """
 
 import json
@@ -18,6 +19,7 @@ from pathlib import Path
 
 from iac_node_forge.application.errors import ConfigurationFormatError
 from iac_node_forge.domain.credential_reference import CredentialReference
+from iac_node_forge.domain.desired_configuration import DesiredConfiguration
 from iac_node_forge.domain.errors import DomainError
 from iac_node_forge.domain.managed_server_record import ManagedServerRecord
 from iac_node_forge.domain.operation import Operation, OperationId, OperationState
@@ -27,6 +29,9 @@ from iac_node_forge.domain.provider_configuration import (
     ProviderConfiguration,
 )
 from iac_node_forge.domain.provider_kind import ProviderKind
+from iac_node_forge.domain.provision_intent import IntentId, ProvisionIntent
+from iac_node_forge.infrastructure.configuration import _provisioning_rows as prov
+from iac_node_forge.infrastructure.configuration._rows import Row, text
 
 _OWNER_ONLY = 0o600
 
@@ -63,6 +68,7 @@ _FIELDS: dict[str, frozenset[str]] = {
             "detail",
         }
     ),
+    **prov.FIELDS,
 }
 _NULLABLE = frozenset(
     {
@@ -72,9 +78,8 @@ _NULLABLE = frozenset(
         "detail",
         "server_identifier",
     }
+    | prov.NULLABLE
 )
-
-type _Row = dict[str, str | None]
 
 
 @dataclass(slots=True)
@@ -87,6 +92,8 @@ class Snapshot:
     references: dict[str, CredentialReference] = field(default_factory=dict)
     managed: list[ManagedServerRecord] = field(default_factory=list)
     operations: dict[OperationId, Operation] = field(default_factory=dict)
+    desired: dict[prov.DesiredKey, DesiredConfiguration] = field(default_factory=dict)
+    intents: dict[IntentId, ProvisionIntent] = field(default_factory=dict)
 
 
 def read_snapshot(path: Path) -> Snapshot:
@@ -96,10 +103,10 @@ def read_snapshot(path: Path) -> Snapshot:
     """
     if not path.exists():
         return Snapshot()
-    text = path.read_text(encoding="utf-8")
+    content = path.read_text(encoding="utf-8")
     rows = [
         _parse_line(number, line)
-        for number, line in enumerate(text.splitlines(), start=1)
+        for number, line in enumerate(content.splitlines(), start=1)
         if line.strip()
     ]
     return _build(rows)
@@ -111,6 +118,10 @@ def write_snapshot(path: Path, snapshot: Snapshot) -> None:
     rows += [_reference_row(r) for r in snapshot.references.values()]
     rows += [_managed_row(m) for m in snapshot.managed]
     rows += [_operation_row(o) for o in snapshot.operations.values()]
+    for desired in snapshot.desired.values():
+        rows += prov.desired_rows(desired)
+    for intent in snapshot.intents.values():
+        rows += prov.intent_rows(intent)
     payload = "".join(
         json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
         for row in rows
@@ -134,7 +145,7 @@ def _write_atomically(path: Path, payload: str) -> None:
         raise
 
 
-def _provider_row(configuration: ProviderConfiguration) -> _Row:
+def _provider_row(configuration: ProviderConfiguration) -> Row:
     reference = configuration.credential_reference
     return {
         "record_type": _PROVIDER,
@@ -146,7 +157,7 @@ def _provider_row(configuration: ProviderConfiguration) -> _Row:
     }
 
 
-def _reference_row(reference: CredentialReference) -> _Row:
+def _reference_row(reference: CredentialReference) -> Row:
     return {
         "record_type": _REFERENCE,
         "name": reference.name,
@@ -154,7 +165,7 @@ def _reference_row(reference: CredentialReference) -> _Row:
     }
 
 
-def _managed_row(record: ManagedServerRecord) -> _Row:
+def _managed_row(record: ManagedServerRecord) -> Row:
     return {
         "record_type": _MANAGED,
         "configuration_id": record.configuration_id,
@@ -163,7 +174,7 @@ def _managed_row(record: ManagedServerRecord) -> _Row:
     }
 
 
-def _operation_row(operation: Operation) -> _Row:
+def _operation_row(operation: Operation) -> Row:
     finished_at = operation.finished_at
     return {
         "record_type": _OPERATION,
@@ -179,7 +190,7 @@ def _operation_row(operation: Operation) -> _Row:
     }
 
 
-def _parse_line(number: int, line: str) -> _Row:
+def _parse_line(number: int, line: str) -> Row:
     try:
         row = json.loads(line)
     except json.JSONDecodeError as error:
@@ -207,7 +218,7 @@ def _parse_line(number: int, line: str) -> _Row:
     return row
 
 
-def _build(rows: list[_Row]) -> Snapshot:
+def _build(rows: list[Row]) -> Snapshot:
     snapshot = Snapshot()
     try:
         _collect(rows, snapshot)
@@ -216,13 +227,12 @@ def _build(rows: list[_Row]) -> Snapshot:
     return snapshot
 
 
-def _collect(rows: list[_Row], snapshot: Snapshot) -> None:
+def _collect(rows: list[Row], snapshot: Snapshot) -> None:
     for row in rows:
         if row["record_type"] == _REFERENCE:
-            reference = CredentialReference(
-                _text(row, "name"), _text(row, "store_kind")
-            )
+            reference = CredentialReference(text(row, "name"), text(row, "store_kind"))
             snapshot.references[reference.name] = reference
+    records = prov.ProvisioningRecords()
     for row in rows:
         kind = row["record_type"]
         if kind == _PROVIDER:
@@ -231,48 +241,45 @@ def _collect(rows: list[_Row], snapshot: Snapshot) -> None:
         elif kind == _MANAGED:
             snapshot.managed.append(
                 ManagedServerRecord(
-                    ConfigurationId(_text(row, "configuration_id")),
-                    _text(row, "server_identifier"),
-                    datetime.fromisoformat(_text(row, "recorded_at")),
+                    ConfigurationId(text(row, "configuration_id")),
+                    text(row, "server_identifier"),
+                    datetime.fromisoformat(text(row, "recorded_at")),
                 )
             )
         elif kind == _OPERATION:
             operation = _operation(row)
             snapshot.operations[operation.operation_id] = operation
+        else:
+            records.add(row)
+    snapshot.desired = records.desired_configurations()
+    snapshot.intents = records.intents()
 
 
 def _configuration(
-    row: _Row, references: dict[str, CredentialReference]
+    row: Row, references: dict[str, CredentialReference]
 ) -> ProviderConfiguration:
     name = row["credential_reference_name"]
     if name is not None and name not in references:
         raise ConfigurationFormatError("configuration names an unknown reference")
     return ProviderConfiguration(
-        configuration_id=ConfigurationId(_text(row, "configuration_id")),
-        provider_kind=ProviderKind(_text(row, "provider_kind")),
-        display_name=_text(row, "display_name"),
-        address=_text(row, "address"),
+        configuration_id=ConfigurationId(text(row, "configuration_id")),
+        provider_kind=ProviderKind(text(row, "provider_kind")),
+        display_name=text(row, "display_name"),
+        address=text(row, "address"),
         credential_reference=references[name] if name is not None else None,
     )
 
 
-def _operation(row: _Row) -> Operation:
+def _operation(row: Row) -> Operation:
     finished_at = row["finished_at"]
     return Operation(
-        operation_id=OperationId(_text(row, "operation_id")),
-        configuration_id=ConfigurationId(_text(row, "configuration_id")),
+        operation_id=OperationId(text(row, "operation_id")),
+        configuration_id=ConfigurationId(text(row, "configuration_id")),
         server_identifier=row["server_identifier"],
-        action=PowerAction(_text(row, "action")),
-        state=OperationState(_text(row, "state")),
-        started_at=datetime.fromisoformat(_text(row, "started_at")),
+        action=PowerAction(text(row, "action")),
+        state=OperationState(text(row, "state")),
+        started_at=datetime.fromisoformat(text(row, "started_at")),
         finished_at=datetime.fromisoformat(finished_at) if finished_at else None,
         provider_reference=row["provider_reference"],
         detail=row["detail"],
     )
-
-
-def _text(row: _Row, key: str) -> str:
-    value = row[key]
-    if value is None:
-        raise ConfigurationFormatError(f"field {key!r} must not be null")
-    return value

@@ -80,6 +80,9 @@ class MockProxmoxState:
     power_forced_status: int | None = None
     # Answers every creation POST with this status; reads still work.
     create_forced_status: int | None = None
+    # A creation is carried out but its answer holds no task identifier, as when
+    # the answer is lost: the guest exists at once and no task is created.
+    create_answers_without_task: bool = False
     # The form fields of every creation the mock accepted, in order.
     created: list[dict[str, str]] = field(default_factory=list)
     # Status reads that answer ``running`` before a task becomes ``stopped``.
@@ -159,6 +162,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._reply(SERVER_ERROR, {"data": None})
         else:
             state.created.append(form)
+            if state.create_answers_without_task:
+                state.resources.append(_new_guest(form, node, guest_type))
+                self._reply(200, {"data": None})
+                return
             upid = (
                 f"UPID:{node}:{len(state.tasks) + 1:08X}:00000000:00000000:"
                 f"{guest_type}create:{form['vmid']}:root@pam!forge:"

@@ -14,8 +14,10 @@ from tests.unit.application.fakes import (
     FakeConfigurationStore,
     FakeCredentialPrompt,
     FakeCredentialStore,
+    FakeDesiredConfigurationStore,
     FakeOperationStore,
     FakeProvider,
+    FakeProvisionIntentStore,
 )
 from tests.unit.application.samples import SECRET
 
@@ -40,6 +42,10 @@ class Harness:
         default_factory=FakeConfigurationStore
     )
     operations: FakeOperationStore = field(default_factory=FakeOperationStore)
+    desired_configurations: FakeDesiredConfigurationStore = field(
+        default_factory=FakeDesiredConfigurationStore
+    )
+    intents: FakeProvisionIntentStore = field(default_factory=FakeProvisionIntentStore)
     clock: FakeClock = field(default_factory=FakeClock)
     interactive: bool = False
     credential_store: FakeCredentialStore = field(default_factory=FakeCredentialStore)
@@ -65,6 +71,8 @@ class Harness:
         services = CliServices(
             configurations=self.configurations,
             operations=self.operations,
+            desired_configurations=self.desired_configurations,
+            provision_intents=self.intents,
             credential_store=self.credential_store,
             credential_prompt=self.prompt,
             provider_factory=self._factory,

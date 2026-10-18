@@ -70,6 +70,22 @@ def failed_operation(
     ).ended(OperationState.FAILED, started_at, bound_detail(reason) or _NO_REASON)
 
 
+def unknown_operation(
+    configuration: ProviderConfiguration,
+    server_identifier: str | None,
+    action: PowerAction,
+    started_at: datetime,
+    reason: str,
+) -> Operation:
+    """Return a new operation that ended at once in state UNKNOWN with a reason.
+
+    For a request whose answer was lost: it may have reached the provider.
+    """
+    return running_operation(
+        configuration, server_identifier, action, started_at, None
+    ).ended(OperationState.UNKNOWN, started_at, bound_detail(reason) or _NO_REASON)
+
+
 def end_operation(
     operation: Operation, state: OperationState, clock: Clock, detail: str | None
 ) -> Operation:

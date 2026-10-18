@@ -9,7 +9,10 @@ import ssl
 
 import httpx
 
-from iac_node_forge.application.errors import ProviderUnreachableError
+from iac_node_forge.application.errors import (
+    ProviderTimeoutError,
+    ProviderUnreachableError,
+)
 
 
 def base_url(address: str) -> str:
@@ -30,7 +33,7 @@ def unreachable_error(
 ) -> ProviderUnreachableError:
     """Describe a timeout or a network or TLS failure, without any URL or header."""
     if isinstance(error, httpx.TimeoutException):
-        return ProviderUnreachableError(
+        return ProviderTimeoutError(
             f"the provider did not answer within {timeout} seconds"
         )
     return ProviderUnreachableError(

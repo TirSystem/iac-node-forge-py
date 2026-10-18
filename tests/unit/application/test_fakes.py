@@ -6,11 +6,14 @@ from iac_node_forge.application.ports import (
     ConfigurationStore,
     CredentialPrompt,
     CredentialStore,
+    DesiredConfigurationStore,
     ProviderPort,
+    ProvisionIntentStore,
 )
 from iac_node_forge.domain.capability import Capability
 from iac_node_forge.domain.credential_reference import CredentialReference
 from iac_node_forge.domain.credentials import Credentials
+from iac_node_forge.domain.desired_configuration import DesiredConfiguration
 from iac_node_forge.domain.managed_server_record import ManagedServerRecord
 from iac_node_forge.domain.provider_configuration import (
     ConfigurationId,
@@ -23,7 +26,9 @@ from tests.unit.application.fakes import (
     FakeConfigurationStore,
     FakeCredentialPrompt,
     FakeCredentialStore,
+    FakeDesiredConfigurationStore,
     FakeProvider,
+    FakeProvisionIntentStore,
 )
 
 CONFIG_ID = ConfigurationId("cfg-1")
@@ -109,3 +114,38 @@ def test_credential_prompt_returns_credentials_and_records_provider() -> None:
     assert credentials.names == ProviderKind.CONTABO.credential_names
     assert credentials.get("client_id") == "typed"
     assert prompt.asked == [ProviderKind.CONTABO]
+
+
+def test_configuration_store_records_a_managed_server_once() -> None:
+    store = FakeConfigurationStore()
+    record = ManagedServerRecord(CONFIG_ID, "100", datetime.now(UTC))
+
+    store.save_managed_server(record)
+    store.save_managed_server(record)
+
+    assert store.managed_servers(CONFIG_ID) == (record,)
+
+
+def test_fake_desired_configuration_store_satisfies_its_port() -> None:
+    port: DesiredConfigurationStore = FakeDesiredConfigurationStore()
+    assert isinstance(port, DesiredConfigurationStore)
+
+
+def test_fake_provision_intent_store_satisfies_its_port() -> None:
+    port: ProvisionIntentStore = FakeProvisionIntentStore()
+    assert isinstance(port, ProvisionIntentStore)
+
+
+def test_desired_configuration_store_replaces_by_key_and_filters_by_owner() -> None:
+    store = FakeDesiredConfigurationStore()
+    other = ConfigurationId("cfg-2")
+
+    store.save(DesiredConfiguration(CONFIG_ID, "a", "img-1"))
+    store.save(DesiredConfiguration(CONFIG_ID, "a", "img-2"))
+    store.save(DesiredConfiguration(other, "a", "img-3"))
+
+    loaded = store.load(CONFIG_ID, "a")
+    assert loaded is not None
+    assert loaded.image == "img-2"
+    assert [d.image for d in store.load_all(CONFIG_ID)] == ["img-2"]
+    assert store.load(CONFIG_ID, "b") is None

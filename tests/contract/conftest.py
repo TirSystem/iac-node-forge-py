@@ -338,12 +338,11 @@ SERVER_NAME = "new-server"
 PROXMOX_DESIRED = DesiredConfiguration(
     ConfigurationId("cfg-1"),
     "alpine-small",
-    "alpine",
+    EXPECTED_TEMPLATES[0].value,
     values=(
         ProviderValue("kind", "lxc"),
         ProviderValue("node", "pve1"),
         ProviderValue("storage", "pve1/local-lvm"),
-        ProviderValue("template", EXPECTED_TEMPLATES[0].value),
         ProviderValue("memory_mb", "512"),
         ProviderValue("cores", "1"),
         ProviderValue("disk_gb", "4"),
@@ -355,15 +354,14 @@ CONTABO_DESIRED = DesiredConfiguration(
     EXPECTED_IMAGES[0].value,
     values=(
         ProviderValue("region", "EU1"),
-        ProviderValue("image", EXPECTED_IMAGES[0].value),
         ProviderValue("product", "V45"),
         ProviderValue("period", "12"),
     ),
 )
 PROXMOX_VALUE_NAMES = frozenset(
-    ("kind", "node", "storage", "template", "memory_mb", "cores", "disk_gb")
+    ("kind", "node", "storage", "memory_mb", "cores", "disk_gb")
 )
-CONTABO_VALUE_NAMES = frozenset(("region", "image", "product", "period"))
+CONTABO_VALUE_NAMES = frozenset(("region", "product", "period"))
 
 
 def _fake_provision_case() -> ProvisionCase:
