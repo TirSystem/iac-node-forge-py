@@ -5,7 +5,6 @@ describes, ``POST /v1/compute/instances`` (ADR-0007).
 """
 
 from collections.abc import Mapping
-from typing import Any
 
 from iac_node_forge.application.errors import ProviderError
 from iac_node_forge.domain.desired_configuration import DesiredConfiguration
@@ -47,7 +46,9 @@ def cost_consequence(desired: DesiredConfiguration) -> str:
     )
 
 
-def build_body(desired: DesiredConfiguration, server_name: str) -> Mapping[str, Any]:
+def build_body(
+    desired: DesiredConfiguration, server_name: str
+) -> Mapping[str, str | int]:
     """Return the JSON body of the creation.
 
     The image is the neutral image of the description. Raises ProviderError,
