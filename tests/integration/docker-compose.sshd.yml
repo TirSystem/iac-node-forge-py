@@ -1,0 +1,17 @@
+# A throw-away SSH server for the file transfer tests in tests/contract.
+#
+# Built from the public image alpine only. It listens on localhost port 2222
+# only, takes a public key (never a private one) and has no password. The tests
+# start and remove it themselves (see README, "File transfer integration test");
+# to start it by hand:
+#
+#   IACNF_SSHD_PUBLIC_KEY="$(cat key.pub)" \
+#     docker compose -p iacnf-sshd -f tests/integration/docker-compose.sshd.yml up -d --build
+services:
+  sshd:
+    build: ./sshd
+    container_name: iacnf-sshd
+    ports:
+      - "127.0.0.1:2222:22"
+    environment:
+      - AUTHORIZED_KEY=${IACNF_SSHD_PUBLIC_KEY:?set IACNF_SSHD_PUBLIC_KEY to a public key line}

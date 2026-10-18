@@ -20,7 +20,7 @@ from iac_node_forge.domain.provision_intent import (
     IntentState,
     ProvisionIntent,
 )
-from iac_node_forge.infrastructure.configuration._rows import Row, text
+from iac_node_forge.infrastructure.configuration._rows import Row, optional_text, text
 
 DESIRED = "desired_configuration"
 KEY_NAME = "access_key_name"
@@ -156,7 +156,7 @@ class ProvisioningRecords:
                 key[1],
                 text(row, "image"),
                 tuple(self._keys.get(key, ())),
-                row["bootstrap_hint"],
+                optional_text(row, "bootstrap_hint"),
                 tuple(self._values.get(key, ())),
             )
             for key, row in self._desired.items()
@@ -173,7 +173,7 @@ class ProvisioningRecords:
 
 
 def _intent(row: Row, values: tuple[ProviderValue, ...]) -> ProvisionIntent:
-    operation_id = row["operation_id"]
+    operation_id = optional_text(row, "operation_id")
     return ProvisionIntent(
         intent_id=IntentId(text(row, "intent_id")),
         configuration_id=ConfigurationId(text(row, "configuration_id")),
@@ -183,7 +183,7 @@ def _intent(row: Row, values: tuple[ProviderValue, ...]) -> ProvisionIntent:
         values=values,
         state=IntentState(text(row, "state")),
         recorded_at=datetime.fromisoformat(text(row, "recorded_at")),
-        reserved_identifier=row["reserved_identifier"],
+        reserved_identifier=optional_text(row, "reserved_identifier"),
         operation_id=OperationId(operation_id) if operation_id else None,
     )
 

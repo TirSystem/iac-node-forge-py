@@ -1,6 +1,7 @@
 """Fixtures: the mock provider APIs with data, and the provider variants."""
 
 from collections.abc import Iterator
+from pathlib import Path
 from typing import NoReturn
 
 import pytest
@@ -37,6 +38,9 @@ from tests.contract.provider_under_test import (
     ProvisionCase,
     RemovalCase,
 )
+from tests.contract.transfer_under_test import FakeWorld, SshdWorld, TransferWorld
+from tests.integration import sshd_server
+from tests.integration.sshd_server import SshdServer
 from tests.unit.application.fakes import (
     FakePowerProvider,
     FakeProvider,
@@ -559,3 +563,21 @@ def removal_case(request: pytest.FixtureRequest) -> RemovalCase:
     if request.param == "contabo":
         return _contabo_removal_case(request.getfixturevalue("mock_contabo"))
     return _fake_removal_case()
+
+
+@pytest.fixture(scope="session")
+def sshd(tmp_path_factory: pytest.TempPathFactory) -> Iterator[SshdServer]:
+    """The throw-away sshd container, started once for the session on demand."""
+    reason = sshd_server.unavailable_reason()
+    if reason is not None:
+        pytest.skip(reason)
+    with sshd_server.running_sshd(tmp_path_factory.mktemp("sshd")) as server:
+        yield server
+
+
+@pytest.fixture(params=["fake", pytest.param("openssh", marks=pytest.mark.integration)])
+def world(request: pytest.FixtureRequest, tmp_path: Path) -> TransferWorld:
+    """The transfer ports in the fake and, opt-in, against a real OpenSSH server."""
+    if request.param == "openssh":
+        return SshdWorld(request.getfixturevalue("sshd"), tmp_path)
+    return FakeWorld()
