@@ -1,4 +1,4 @@
-"""Power-request knowledge shared by the provider adapters.
+"""Operation knowledge shared by the provider adapters (power and provision).
 
 How an Operation is created, failed and ended is the same for every adapter;
 what a provider's answer means is not, and stays in the adapter.
@@ -8,6 +8,8 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+from iac_node_forge.application.errors import ProviderError
+from iac_node_forge.domain.desired_configuration import DesiredConfiguration
 from iac_node_forge.domain.operation import (
     Operation,
     OperationId,
@@ -28,9 +30,17 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def required_value(desired: DesiredConfiguration, name: str) -> str:
+    """Return the provider value ``name``, or raise ProviderError naming it."""
+    value = desired.value(name)
+    if value is None:
+        raise ProviderError(f"the required value {name!r} is missing")
+    return value
+
+
 def running_operation(
     configuration: ProviderConfiguration,
-    server_identifier: str,
+    server_identifier: str | None,
     action: PowerAction,
     started_at: datetime,
     provider_reference: str | None,
@@ -49,7 +59,7 @@ def running_operation(
 
 def failed_operation(
     configuration: ProviderConfiguration,
-    server_identifier: str,
+    server_identifier: str | None,
     action: PowerAction,
     started_at: datetime,
     reason: str,

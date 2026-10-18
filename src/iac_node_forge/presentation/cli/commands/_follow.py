@@ -94,6 +94,8 @@ def _server_state(
     services: CliServices, resolver: CliProviderResolver, operation: OperationSummary
 ) -> str | None:
     """Read the server's state after success; a failed read is not an error."""
+    if operation.server_identifier is None:
+        return None
     try:
         server = ListServers(resolver, services.configurations).inspect_server(
             operation.configuration_id, operation.server_identifier

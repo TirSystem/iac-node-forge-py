@@ -259,7 +259,7 @@ def test_a_missing_field_is_rejected(tmp_path: Path) -> None:
         {"detail": "x" * 501},
         {"detail": "  "},
         {"operation_id": 7},
-        {"server_identifier": None},
+        {"server_identifier": "  "},
     ],
 )
 def test_an_invalid_record_is_rejected(
@@ -294,3 +294,21 @@ def test_no_temporary_file_is_left_behind(tmp_path: Path) -> None:
     JsonLinesOperationStore(tmp_path / "c.jsonl").save(_operation())
 
     assert [p.name for p in tmp_path.iterdir()] == ["c.jsonl"]
+
+
+def test_a_provision_operation_without_a_server_identifier_round_trips(
+    tmp_path: Path,
+) -> None:
+    store = JsonLinesOperationStore(tmp_path / "c.jsonl")
+    operation = Operation(
+        OperationId("op-p"),
+        ConfigurationId("lab"),
+        None,
+        PowerAction.PROVISION,
+        OperationState.RUNNING,
+        STARTED,
+    )
+
+    store.save(operation)
+
+    assert store.load(OperationId("op-p")) == operation

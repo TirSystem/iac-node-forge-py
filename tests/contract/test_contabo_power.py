@@ -8,7 +8,7 @@ import pytest
 from iac_node_forge.application.errors import ProviderError, ServerNotFoundError
 from iac_node_forge.domain.credentials import Credentials
 from iac_node_forge.domain.operation import Operation, OperationState
-from iac_node_forge.domain.power_action import PowerAction
+from iac_node_forge.domain.power_action import POWER_ACTIONS, PowerAction
 from iac_node_forge.domain.provider_configuration import ProviderConfiguration
 from iac_node_forge.infrastructure.contabo import ContaboProvider
 from tests.contract.conftest import CONTABO_VALUES, contabo_configuration_for
@@ -325,7 +325,7 @@ def test_only_get_the_four_power_posts_and_the_token_post_are_sent(
     mock_contabo: MockContaboServer, configuration: ProviderConfiguration
 ) -> None:
     provider = provider_with(mock_contabo, settle=0.0)
-    for action in PowerAction:
+    for action in POWER_ACTIONS:
         operation = provider.request_power(configuration, "100", action)
         provider.operation_state(configuration, operation)
 

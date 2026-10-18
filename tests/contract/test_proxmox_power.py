@@ -12,7 +12,7 @@ from iac_node_forge.domain.operation import (
     OperationId,
     OperationState,
 )
-from iac_node_forge.domain.power_action import PowerAction
+from iac_node_forge.domain.power_action import POWER_ACTIONS, PowerAction
 from iac_node_forge.domain.provider_configuration import ProviderConfiguration
 from iac_node_forge.infrastructure.proxmox import ProxmoxProvider
 from iac_node_forge.infrastructure.proxmox import provider as proxmox_module
@@ -240,7 +240,7 @@ def test_only_get_and_the_power_posts_are_ever_sent(
     configuration: ProviderConfiguration,
 ) -> None:
     mock_proxmox.state.task_polls_before_end = 0
-    for action in PowerAction:
+    for action in POWER_ACTIONS:
         operation = proxmox_provider.request_power(configuration, "100", action)
         proxmox_provider.operation_state(configuration, operation)
 
@@ -293,11 +293,12 @@ def test_power_capabilities_are_declared(
     } <= names
 
 
-def test_adapter_source_names_no_write_method_beyond_the_power_post() -> None:
+def test_adapter_source_names_no_write_method_beyond_power_and_creation() -> None:
     source = inspect.getsource(proxmox_module)
 
     assert source.count('"POST"') == 1
-    assert source.count("self._post(") == 1
+    # The power request and the creation, the only callers of ``_post``.
+    assert source.count("self._post(") == 2
     assert source.count("_POWER_VERB[") == 1
     for write_call in (".put(", ".patch(", ".delete(", ".post("):
         assert write_call not in source

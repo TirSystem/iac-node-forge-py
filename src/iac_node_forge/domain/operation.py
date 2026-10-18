@@ -1,4 +1,4 @@
-"""One requested power action and its recorded outcome."""
+"""One requested action and its recorded outcome."""
 
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -52,7 +52,7 @@ def bound_detail(text: str) -> str | None:
 
 @dataclass(frozen=True, slots=True)
 class Operation:
-    """One requested power action and its outcome.
+    """One requested action (a power action or a provision) and its outcome.
 
     It holds identifiers, an action, a state, two timestamps and two bounded
     texts (a provider task identifier and a detail). It has no field for a
@@ -62,12 +62,14 @@ class Operation:
     Invariants: a RUNNING operation has no ``finished_at``; every other state
     has one, not before ``started_at``; both timestamps carry a timezone;
     ``detail`` and ``provider_reference``, when given, are not blank and within
-    their bounds (``bound_detail`` shapes a provider text to fit).
+    their bounds (``bound_detail`` shapes a provider text to fit);
+    ``server_identifier`` is None for a provision until the provider names the
+    server, and is not blank otherwise.
     """
 
     operation_id: OperationId
     configuration_id: ConfigurationId
-    server_identifier: str
+    server_identifier: str | None
     action: PowerAction
     state: OperationState
     started_at: datetime
@@ -78,7 +80,8 @@ class Operation:
     def __post_init__(self) -> None:
         require_text("Operation", "operation_id", self.operation_id)
         require_text("Operation", "configuration_id", self.configuration_id)
-        require_text("Operation", "server_identifier", self.server_identifier)
+        if self.server_identifier is not None:
+            require_text("Operation", "server_identifier", self.server_identifier)
         self._check_times()
         self._check_text(
             "provider_reference", self.provider_reference, MAX_PROVIDER_REFERENCE_LENGTH

@@ -45,6 +45,7 @@ from iac_node_forge.application.ports import (
     ConfigurationStore,
     ProviderPort,
     ServerPowerPort,
+    ServerProvisionPort,
 )
 from iac_node_forge.application.use_cases.control_server_power import (
     ControlServerPower,
@@ -115,6 +116,11 @@ class _FixedResolver:
         return self._provider
 
     def power_for(self, configuration: ProviderConfiguration) -> ServerPowerPort:
+        return self._provider
+
+    def provision_for(
+        self, configuration: ProviderConfiguration
+    ) -> ServerProvisionPort:
         return self._provider
 
 

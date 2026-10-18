@@ -18,6 +18,7 @@ from tests.unit.application.fakes import (
     FakePowerProvider,
     FakeProvider,
     FakeProviderResolver,
+    FakeProvisionProvider,
 )
 from tests.unit.application.samples import (
     CACHE,
@@ -105,6 +106,11 @@ def test_list_servers_reports_unobtainable_credentials_as_a_failure() -> None:
             raise CredentialNotFoundError("gone")
 
         def power_for(self, configuration: ProviderConfiguration) -> FakePowerProvider:
+            raise CredentialNotFoundError("gone")
+
+        def provision_for(
+            self, configuration: ProviderConfiguration
+        ) -> FakeProvisionProvider:
             raise CredentialNotFoundError("gone")
 
     store = FakeConfigurationStore()

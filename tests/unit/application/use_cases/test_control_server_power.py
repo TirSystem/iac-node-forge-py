@@ -8,6 +8,7 @@ from iac_node_forge.application.dto import Confirmation, PowerOutcome
 from iac_node_forge.application.errors import (
     ConfigurationNotFoundError,
     NoConfigurationError,
+    NotAPowerActionError,
     ProviderAuthenticationError,
     ProviderRateLimitError,
     ProviderUnreachableError,
@@ -15,7 +16,7 @@ from iac_node_forge.application.errors import (
 from iac_node_forge.application.use_cases import ControlServerPower
 from iac_node_forge.domain.capability import Capability
 from iac_node_forge.domain.operation import OperationState
-from iac_node_forge.domain.power_action import PowerAction
+from iac_node_forge.domain.power_action import POWER_ACTIONS, PowerAction
 from iac_node_forge.domain.server import Server
 from tests.unit.application.fakes import (
     POWER_CAPABILITY_SET,
@@ -103,7 +104,7 @@ def test_request_reports_not_found_when_the_power_port_does_not_know_it() -> Non
     assert setup.operations.saved == []
 
 
-@pytest.mark.parametrize("action", list(PowerAction))
+@pytest.mark.parametrize("action", list(POWER_ACTIONS))
 def test_request_reports_an_undeclared_capability_as_unsupported(
     action: PowerAction,
 ) -> None:
@@ -290,3 +291,15 @@ def test_request_resolves_the_power_port_only_after_the_confirmation() -> None:
     use_case.request_power_action("Lab", "101", PowerAction.START, NO)
 
     assert resolver.power_resolved == []
+
+
+def test_provision_is_refused_as_a_power_action_before_anything_is_read() -> None:
+    setup = make()
+
+    with pytest.raises(NotAPowerActionError, match="provision"):
+        setup.use_case.request_power_action("Lab", "100", PowerAction.PROVISION, YES)
+    with pytest.raises(NotAPowerActionError, match="provision"):
+        setup.use_case.preview_power_action("Lab", "100", PowerAction.PROVISION)
+
+    assert setup.power.requests == []
+    assert setup.operations.saved == []

@@ -19,7 +19,8 @@ def write_operation(
     """Print the operation as labelled lines; the state is the word users read."""
     write_detail_line(stream, "Operation", operation.operation_id)
     write_detail_line(stream, "Configuration", operation.configuration_id)
-    write_detail_line(stream, "Server", operation.server_identifier)
+    if operation.server_identifier is not None:
+        write_detail_line(stream, "Server", operation.server_identifier)
     write_detail_line(stream, "Action", operation.action.value)
     write_detail_line(stream, "State", operation.state.value)
     write_detail_line(stream, "Started", operation.started_at.isoformat())

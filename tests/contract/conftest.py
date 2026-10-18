@@ -4,24 +4,33 @@ from collections.abc import Iterator
 
 import pytest
 
-from iac_node_forge.application.capabilities import POWER_CAPABILITIES
+from iac_node_forge.application.capabilities import (
+    POWER_CAPABILITIES,
+    PROVISION_SERVER,
+)
 from iac_node_forge.application.errors import ProviderAuthenticationError
 from iac_node_forge.domain.capability import Capability
 from iac_node_forge.domain.credentials import Credentials
-from iac_node_forge.domain.power_action import PowerAction
+from iac_node_forge.domain.desired_configuration import DesiredConfiguration
+from iac_node_forge.domain.power_action import POWER_ACTIONS, PowerAction
 from iac_node_forge.domain.provider_configuration import (
     ConfigurationId,
     ProviderConfiguration,
 )
 from iac_node_forge.domain.provider_kind import ProviderKind
+from iac_node_forge.domain.provider_value import ProviderValue
 from iac_node_forge.domain.server import Server
 from iac_node_forge.domain.server_option import ServerOption
 from iac_node_forge.infrastructure.contabo import ContaboProvider
 from iac_node_forge.infrastructure.proxmox import ProxmoxProvider
 from tests.contract.mock_contabo import MockContaboServer
 from tests.contract.mock_proxmox import MockProxmoxServer
-from tests.contract.provider_under_test import ProviderUnderTest
-from tests.unit.application.fakes import FakePowerProvider, FakeProvider
+from tests.contract.provider_under_test import ProviderUnderTest, ProvisionCase
+from tests.unit.application.fakes import (
+    FakePowerProvider,
+    FakeProvider,
+    FakeProvisionProvider,
+)
 
 TOKEN = "root@pam!forge=11111111-2222-3333-4444-555555555555"
 WRONG_TOKEN = "root@pam!forge=99999999-9999-9999-9999-999999999999"
@@ -56,6 +65,12 @@ EXPECTED_CONTABO_SERVERS = (
     ),
     Server("101", "db", "stopped", "4 vCPU, 8192 MiB", ("203.0.113.20",), False),
 )
+EXPECTED_TEMPLATES = (
+    ServerOption("template", "pve1/local:vztmpl/alpine-3.24-default.tar.xz"),
+    ServerOption("template", "pve1/local:iso/debian-12.iso"),
+    ServerOption("template", "pve2/local:vztmpl/debian-12.tar.zst"),
+)
+EXPECTED_PRODUCTS = (ServerOption("product", "V45"), ServerOption("product", "V47"))
 EXPECTED_REGIONS = (ServerOption("region", "EU1"), ServerOption("region", "US-east"))
 EXPECTED_IMAGES = (
     ServerOption("image", "3f1c0a52-0000-4000-8000-000000000001"),
@@ -66,7 +81,10 @@ READ_ONLY_CAPABILITIES = frozenset(
     for name in ("list_servers", "list_server_options", "inspect_server")
 )
 POWER_ONLY_CAPABILITIES = frozenset(Capability(name) for name in POWER_CAPABILITIES)
-ALL_CAPABILITIES = READ_ONLY_CAPABILITIES | POWER_ONLY_CAPABILITIES
+PROVISION_CAPABILITY = frozenset({Capability(PROVISION_SERVER)})
+ALL_CAPABILITIES = (
+    READ_ONLY_CAPABILITIES | POWER_ONLY_CAPABILITIES | PROVISION_CAPABILITY
+)
 PROXMOX_VERBS = {
     PowerAction.START: "start",
     PowerAction.SHUTDOWN: "shutdown",
@@ -74,15 +92,24 @@ PROXMOX_VERBS = {
     PowerAction.RESTART: "reboot",
 }
 PROXMOX_PLACES = {"100": ("pve1", "qemu"), "101": ("pve2", "lxc")}
+CONTABO_CREATE_WRITE = ("POST", "/v1/compute/instances")
 CONTABO_ALLOWED_WRITES = frozenset(
     ("POST", f"/v1/compute/instances/{server}/actions/{verb}")
     for server in ("100", "101")
     for verb in ("start", "shutdown", "stop", "restart")
+) | {CONTABO_CREATE_WRITE}
+PROXMOX_CREATE_WRITES = frozenset(
+    ("POST", f"/api2/json/nodes/{node}/{kind}")
+    for node in ("pve1", "pve2")
+    for kind in ("lxc", "qemu")
 )
-PROXMOX_ALLOWED_WRITES = frozenset(
-    ("POST", f"/api2/json/nodes/{node}/{kind}/{server}/status/{verb}")
-    for server, (node, kind) in PROXMOX_PLACES.items()
-    for verb in PROXMOX_VERBS.values()
+PROXMOX_ALLOWED_WRITES = (
+    frozenset(
+        ("POST", f"/api2/json/nodes/{node}/{kind}/{server}/status/{verb}")
+        for server, (node, kind) in PROXMOX_PLACES.items()
+        for verb in PROXMOX_VERBS.values()
+    )
+    | PROXMOX_CREATE_WRITES
 )
 
 
@@ -102,8 +129,23 @@ def mock_proxmox() -> Iterator[MockProxmoxServer]:
         state = server.state
         state.nodes = [{"node": "pve1"}, {"node": "pve2"}]
         state.storages = {
-            "pve1": [{"storage": "local"}, {"storage": "local-lvm"}],
-            "pve2": [{"storage": "local"}],
+            "pve1": [
+                {"storage": "local", "content": "iso,vztmpl,backup"},
+                {"storage": "local-lvm", "content": "rootdir,images"},
+            ],
+            "pve2": [{"storage": "local", "content": "iso,vztmpl"}],
+        }
+        state.storage_content = {
+            "pve1/local": [
+                {"volid": "local:iso/debian-12.iso", "content": "iso"},
+                {
+                    "volid": "local:vztmpl/alpine-3.24-default.tar.xz",
+                    "content": "vztmpl",
+                },
+            ],
+            "pve2/local": [
+                {"volid": "local:vztmpl/debian-12.tar.zst", "content": "vztmpl"}
+            ],
         }
         state.resources = [
             {
@@ -141,6 +183,10 @@ def mock_contabo() -> Iterator[MockContaboServer]:
         state.images = [
             {"imageId": option.value, "name": f"image {number}"}
             for number, option in enumerate(EXPECTED_IMAGES, start=1)
+        ]
+        state.products = [
+            {"productId": option.value, "name": f"product {number}"}
+            for number, option in enumerate(EXPECTED_PRODUCTS, start=1)
         ]
         state.instances = [
             {
@@ -187,7 +233,7 @@ def _fake_variant() -> ProviderUnderTest:
     provider = FakeProvider(
         accepted_secret=TOKEN,
         capabilities=ALL_CAPABILITIES,
-        options=EXPECTED_NODES + EXPECTED_STORAGE,
+        options=EXPECTED_NODES + EXPECTED_STORAGE + EXPECTED_TEMPLATES,
         servers=EXPECTED_SERVERS,
     )
     return ProviderUnderTest(
@@ -197,7 +243,11 @@ def _fake_variant() -> ProviderUnderTest:
         credentials=Credentials.single(TOKEN),
         wrong_credentials=Credentials.single(WRONG_TOKEN),
         expected_servers=EXPECTED_SERVERS,
-        expected_options={"node": EXPECTED_NODES, "storage": EXPECTED_STORAGE},
+        expected_options={
+            "node": EXPECTED_NODES,
+            "storage": EXPECTED_STORAGE,
+            "template": EXPECTED_TEMPLATES,
+        },
         secret_values=(TOKEN, WRONG_TOKEN),
         power=power,
         reject_power_requests=lambda: power.reject_with(
@@ -210,7 +260,7 @@ def _fake_variant() -> ProviderUnderTest:
         allowed_write_requests=frozenset(
             ("REQUEST", f"{server}:{action.value}")
             for server in ("100", "101")
-            for action in PowerAction
+            for action in POWER_ACTIONS
         ),
     )
 
@@ -224,7 +274,11 @@ def _proxmox_variant(mock: MockProxmoxServer) -> ProviderUnderTest:
         credentials=Credentials.single(TOKEN),
         wrong_credentials=Credentials.single(WRONG_TOKEN),
         expected_servers=EXPECTED_SERVERS,
-        expected_options={"node": EXPECTED_NODES, "storage": EXPECTED_STORAGE},
+        expected_options={
+            "node": EXPECTED_NODES,
+            "storage": EXPECTED_STORAGE,
+            "template": EXPECTED_TEMPLATES,
+        },
         secret_values=(
             TOKEN,
             WRONG_TOKEN,
@@ -255,7 +309,11 @@ def _contabo_variant(mock: MockContaboServer) -> ProviderUnderTest:
         credentials=Credentials(CONTABO_VALUES),
         wrong_credentials=Credentials(CONTABO_WRONG_VALUES),
         expected_servers=EXPECTED_CONTABO_SERVERS,
-        expected_options={"region": EXPECTED_REGIONS, "image": EXPECTED_IMAGES},
+        expected_options={
+            "region": EXPECTED_REGIONS,
+            "image": EXPECTED_IMAGES,
+            "product": EXPECTED_PRODUCTS,
+        },
         secret_values=tuple(CONTABO_VALUES.values())
         + (CONTABO_WRONG_VALUES["api_password"],),
         power=provider,
@@ -274,3 +332,116 @@ def provider_under_test(request: pytest.FixtureRequest) -> ProviderUnderTest:
     if request.param == "contabo":
         return _contabo_variant(request.getfixturevalue("mock_contabo"))
     return _fake_variant()
+
+
+SERVER_NAME = "new-server"
+PROXMOX_DESIRED = DesiredConfiguration(
+    ConfigurationId("cfg-1"),
+    "alpine-small",
+    "alpine",
+    values=(
+        ProviderValue("kind", "lxc"),
+        ProviderValue("node", "pve1"),
+        ProviderValue("storage", "pve1/local-lvm"),
+        ProviderValue("template", EXPECTED_TEMPLATES[0].value),
+        ProviderValue("memory_mb", "512"),
+        ProviderValue("cores", "1"),
+        ProviderValue("disk_gb", "4"),
+    ),
+)
+CONTABO_DESIRED = DesiredConfiguration(
+    ConfigurationId("cfg-1"),
+    "vps-small",
+    EXPECTED_IMAGES[0].value,
+    values=(
+        ProviderValue("region", "EU1"),
+        ProviderValue("image", EXPECTED_IMAGES[0].value),
+        ProviderValue("product", "V45"),
+        ProviderValue("period", "12"),
+    ),
+)
+PROXMOX_VALUE_NAMES = frozenset(
+    ("kind", "node", "storage", "template", "memory_mb", "cores", "disk_gb")
+)
+CONTABO_VALUE_NAMES = frozenset(("region", "image", "product", "period"))
+
+
+def _fake_provision_case() -> ProvisionCase:
+    fake = FakeProvisionProvider(
+        servers=EXPECTED_SERVERS, options=EXPECTED_NODES + EXPECTED_STORAGE
+    )
+    return ProvisionCase(
+        name="fake",
+        provider=fake,
+        provision=fake,
+        configuration=configuration_for("fake.invalid"),
+        desired=PROXMOX_DESIRED,
+        server_name=SERVER_NAME,
+        required_value_names=frozenset(("node", "storage", "cores")),
+        secret_values=(TOKEN, WRONG_TOKEN),
+        reject_creation=lambda: fake.reject_with(
+            ProviderAuthenticationError("the fake provider answered 403")
+        ),
+        rejection_hint=None,
+        fail_operations=fake.make_operations_fail,
+        write_requests=lambda: [("REQUEST", name) for name, _ in fake.requests],
+        allowed_write_requests=frozenset({("REQUEST", SERVER_NAME)}),
+        reserves_identifier=True,
+        states_cost=False,
+    )
+
+
+def _proxmox_provision_case(mock: MockProxmoxServer) -> ProvisionCase:
+    provider = ProxmoxProvider(Credentials.single(TOKEN), timeout=2.0)
+    return ProvisionCase(
+        name="proxmox",
+        provider=provider,
+        provision=provider,
+        configuration=configuration_for(mock.address),
+        desired=PROXMOX_DESIRED,
+        server_name=SERVER_NAME,
+        required_value_names=PROXMOX_VALUE_NAMES,
+        secret_values=(TOKEN, TOKEN.split("=", 1)[1]),
+        reject_creation=lambda: setattr(mock.state, "create_forced_status", 403),
+        rejection_hint="VM.Allocate",
+        fail_operations=lambda: setattr(
+            mock.state, "task_exitstatus", "unable to create CT 102 - no space"
+        ),
+        write_requests=lambda: [(r.method, r.path) for r in mock.write_requests],
+        allowed_write_requests=PROXMOX_ALLOWED_WRITES,
+        reserves_identifier=True,
+        states_cost=False,
+    )
+
+
+def _contabo_provision_case(mock: MockContaboServer) -> ProvisionCase:
+    provider = ContaboProvider(
+        Credentials(CONTABO_VALUES), auth_url=mock.auth_url, timeout=2.0
+    )
+    return ProvisionCase(
+        name="contabo",
+        provider=provider,
+        provision=provider,
+        configuration=contabo_configuration_for(mock.address),
+        desired=CONTABO_DESIRED,
+        server_name=SERVER_NAME,
+        required_value_names=CONTABO_VALUE_NAMES,
+        secret_values=tuple(CONTABO_VALUES.values()),
+        reject_creation=lambda: setattr(mock.state, "create_forced_status", 403),
+        rejection_hint=None,
+        fail_operations=lambda: setattr(mock.state, "transition_fails", True),
+        write_requests=lambda: [(r.method, r.path) for r in mock.write_requests],
+        allowed_write_requests=frozenset({CONTABO_CREATE_WRITE}),
+        reserves_identifier=False,
+        states_cost=True,
+    )
+
+
+@pytest.fixture(params=["fake", "proxmox", "contabo"])
+def provision_case(request: pytest.FixtureRequest) -> ProvisionCase:
+    """The same provisioning in each variant; the mocks start on demand."""
+    if request.param == "proxmox":
+        return _proxmox_provision_case(request.getfixturevalue("mock_proxmox"))
+    if request.param == "contabo":
+        return _contabo_provision_case(request.getfixturevalue("mock_contabo"))
+    return _fake_provision_case()

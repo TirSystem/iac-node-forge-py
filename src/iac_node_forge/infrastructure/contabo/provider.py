@@ -1,16 +1,17 @@
-"""ProviderPort and ServerPowerPort implementation for Contabo (ADR-0005).
+"""ProviderPort, ServerPowerPort and ServerProvisionPort for Contabo.
 
 The four credential values are exchanged for a bearer token with the OAuth2
 password grant. The token is kept only in memory, reused, and replaced once
 after a 401. Every API call carries a fresh ``x-request-id``. Every API call
 is a GET except the four power POSTs of ``_POWER_ACTION_PATH``
-(``/actions/start``, ``shutdown``, ``stop`` and ``restart`` of one instance);
-the only other request is the token POST (ADR-0006).
+(``/actions/start``, ``shutdown``, ``stop`` and ``restart`` of one instance)
+and the instance creation (``POST /v1/compute/instances``, ADR-0007); the
+only other request is the token POST (ADR-0006). Credentials: ADR-0005.
 """
 
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from types import MappingProxyType
 from typing import Any
@@ -19,6 +20,7 @@ import httpx
 
 from iac_node_forge.application import capabilities
 from iac_node_forge.application.errors import (
+    PowerActionUnsupportedError,
     ProviderAuthenticationError,
     ProviderError,
     ProviderPageLimitError,
@@ -30,6 +32,7 @@ from iac_node_forge.application.errors import (
 from iac_node_forge.domain.access_result import AccessResult
 from iac_node_forge.domain.capability import Capability
 from iac_node_forge.domain.credentials import Credentials
+from iac_node_forge.domain.desired_configuration import DesiredConfiguration
 from iac_node_forge.domain.errors import MissingCredentialError
 from iac_node_forge.domain.operation import Operation, OperationState
 from iac_node_forge.domain.power_action import PowerAction
@@ -37,7 +40,9 @@ from iac_node_forge.domain.provider_configuration import ProviderConfiguration
 from iac_node_forge.domain.provider_kind import ProviderKind
 from iac_node_forge.domain.server import Server
 from iac_node_forge.domain.server_option import ServerOption
+from iac_node_forge.domain.value_rule import ValueRule
 from iac_node_forge.infrastructure import _http, _power
+from iac_node_forge.infrastructure.contabo import _provision
 
 DEFAULT_AUTH_URL = (
     "https://auth.contabo.com/auth/realms/contabo/protocol/openid-connect/token"
@@ -45,16 +50,26 @@ DEFAULT_AUTH_URL = (
 DEFAULT_TIMEOUT_SECONDS = 10.0
 OPTION_KIND_REGION = "region"
 OPTION_KIND_IMAGE = "image"
+OPTION_KIND_PRODUCT = "product"
 PAGE_SIZE = 100
 MAX_PAGES = 100
 INSTANCES_PATH = "/v1/compute/instances"
 DATA_CENTERS_PATH = "/v1/data-centers"
 IMAGES_PATH = "/v1/compute/images"
+# UNVERIFIED: provider-api-verification.md (C6) names ``productId`` as an
+# input of the creation but gives no path that lists the products; this
+# path is a guess that only the mock answers. Confirm it against the
+# Contabo API description or a live account before relying on it.
+PRODUCTS_PATH = "/v1/compute/products"
 DEFAULT_RESTART_SETTLE_SECONDS = 30.0
 _UNKNOWN = "unknown"
 _STATUS_RUNNING = "running"
 _STATUS_STOPPED = "stopped"
 _STATUS_ERROR = "error"
+_NO_INSTANCE_NAMED = (
+    "Contabo accepted the request but named no instance; check the account "
+    "before trying again"
+)
 _ACCEPTED_WRITE_STATUSES = frozenset({200, 201, 202})
 _RESTART_NOT_OBSERVED = (
     "the instance is running after the settle time; the restart itself could "
@@ -150,25 +165,26 @@ class ContaboProvider:
     def discover_capabilities(
         self, configuration: ProviderConfiguration
     ) -> frozenset[Capability]:
-        """Return the read capabilities and the four power capabilities."""
+        """Return the read, the four power and the provision capabilities."""
         return frozenset(
             Capability(name)
             for name in (
                 capabilities.LIST_SERVERS,
                 capabilities.LIST_SERVER_OPTIONS,
                 capabilities.INSPECT_SERVER,
-                *capabilities.POWER_ACTION_CAPABILITY.values(),
+                *capabilities.ACTION_CAPABILITY.values(),
             )
         )
 
     def list_server_options(
         self, configuration: ProviderConfiguration, option_kind: str
     ) -> tuple[ServerOption, ...]:
-        """Return ``region`` (data center) or ``image`` options.
+        """Return ``region`` (data center), ``image`` or ``product`` options.
 
         A region value is the data center slug, or its name when it has no
-        slug. An image value is the ``imageId``, which is what a later create
-        request needs. Raises UnknownOptionKindError for any other kind.
+        slug. An image value is the ``imageId`` and a product value the
+        ``productId``, which is what the create request needs. Raises
+        UnknownOptionKindError for any other kind.
         """
         if option_kind == OPTION_KIND_REGION:
             items = self._get_pages(configuration.address, DATA_CENTERS_PATH)
@@ -176,6 +192,9 @@ class ContaboProvider:
         if option_kind == OPTION_KIND_IMAGE:
             items = self._get_pages(configuration.address, IMAGES_PATH)
             return _options(OPTION_KIND_IMAGE, items, ("imageId",))
+        if option_kind == OPTION_KIND_PRODUCT:
+            items = self._get_pages(configuration.address, PRODUCTS_PATH)
+            return _options(OPTION_KIND_PRODUCT, items, ("productId",))
         raise UnknownOptionKindError(
             f"Contabo offers no options of kind {option_kind!r}; valid kinds: "
             + ", ".join(ProviderKind.CONTABO.option_kinds)
@@ -216,8 +235,12 @@ class ContaboProvider:
 
         A provider failure (401 after renewal, 403, 429, 5xx, unreachable)
         gives a FAILED operation. Raises ServerNotFoundError when the
-        identifier is not a number or the instance does not exist.
+        identifier is not a number or the instance does not exist, and
+        PowerActionUnsupportedError for PROVISION, which is not a power
+        action.
         """
+        if action not in _POWER_ACTION_PATH:
+            raise PowerActionUnsupportedError(f"{action.value} is not a power action")
         text = server_identifier.strip()
         if not (text.isascii() and text.isdecimal()):
             raise ServerNotFoundError(f"No server {server_identifier!r} at Contabo")
@@ -241,17 +264,73 @@ class ContaboProvider:
             configuration, server_identifier, action, started_at, None
         )
 
+    def value_rules(
+        self, configuration: ProviderConfiguration
+    ) -> tuple[ValueRule, ...]:
+        """Return the values an instance creation needs."""
+        return _provision.value_rules()
+
+    def reserve_identifier(self, configuration: ProviderConfiguration) -> str | None:
+        """Contabo chooses the instance id itself: always None."""
+        return None
+
+    def cost_consequence(
+        self, configuration: ProviderConfiguration, desired: DesiredConfiguration
+    ) -> str | None:
+        """Name the contract period in months and the commitment it makes."""
+        return _provision.cost_consequence(desired)
+
+    def request_provision(
+        self,
+        configuration: ProviderConfiguration,
+        desired: DesiredConfiguration,
+        server_name: str,
+        reserved_identifier: str | None,
+    ) -> Operation:
+        """POST the one instance creation; the answer names the new instance.
+
+        A provider failure (401 after renewal, 403, 429, 4xx, 5xx, unreachable)
+        gives a FAILED operation. When the provider accepts the request but the
+        answer names no instance, the operation stays RUNNING without a server
+        identifier and says so: the instance may exist, so it is not FAILED.
+        """
+        started_at = self._clock()
+        try:
+            body = _provision.build_body(desired, server_name)
+            response = self._authorised_post(
+                self._session, configuration.address, INSTANCES_PATH, body
+            )
+            instance_id = _created_instance_id(
+                _body(response, _ACCEPTED_WRITE_STATUSES)
+            )
+        except ProviderError as error:
+            return _power.failed_operation(
+                configuration, None, PowerAction.PROVISION, started_at, str(error)
+            )
+        running = _power.running_operation(
+            configuration, instance_id, PowerAction.PROVISION, started_at, None
+        )
+        if instance_id is None:
+            return replace(running, detail=_NO_INSTANCE_NAMED)
+        return running
+
     def operation_state(
         self, configuration: ProviderConfiguration, operation: Operation
     ) -> Operation:
         """Read the instance status once and judge it against the action.
+
+        A provision succeeds when the instance is ``running``, fails when its
+        status is ``error`` and is otherwise still RUNNING (``provisioning``,
+        ``installing``, ``unknown`` and the rest are not final). A provision
+        without a server identifier cannot be read and stays as it is. The
+        rest of this text is about a power action.
 
         START, SHUTDOWN and STOP succeed when the status equals the target;
         ``error`` fails; any other status is still RUNNING. RESTART succeeds
         only when asked at or after the settle time with status ``running``,
         and its detail says the transition was not observed.
         """
-        if operation.has_ended:
+        if operation.has_ended or operation.server_identifier is None:
             return operation
         status = self.get_server(configuration, operation.server_identifier).state
         if status == _STATUS_ERROR:
@@ -261,9 +340,18 @@ class ContaboProvider:
                 self._clock,
                 f"the instance reported status {status!r}",
             )
+        if operation.action is PowerAction.PROVISION:
+            return self._judge_provision(operation, status)
         if operation.action is PowerAction.RESTART:
             return self._judge_restart(operation, status)
         if status == _TARGET_STATUS[operation.action]:
+            return _power.end_operation(
+                operation, OperationState.SUCCEEDED, self._clock, None
+            )
+        return operation
+
+    def _judge_provision(self, operation: Operation, status: str) -> Operation:
+        if status == _STATUS_RUNNING:
             return _power.end_operation(
                 operation, OperationState.SUCCEEDED, self._clock, None
             )
@@ -318,19 +406,28 @@ class ContaboProvider:
         )
 
     def _authorised_post(
-        self, session: _TokenSession, address: str, path: str
+        self,
+        session: _TokenSession,
+        address: str,
+        path: str,
+        body: Mapping[str, _Json] | None = None,
     ) -> httpx.Response:
-        """POST a power action with no body; renew the token once after a 401.
+        """POST a write; renew the token once after a 401.
 
-        The action is documented without a request body, so only the JSON
-        content type is sent. A 401 means the request was not processed, so
-        repeating it once with the new token cannot act twice.
+        A power action is documented without a request body, so only the JSON
+        content type is sent; a creation sends ``body`` as JSON. A 401 means
+        the request was not processed, so repeating it once with the new token
+        cannot act twice.
         """
         url = _http.base_url(address) + path
         return self._authorised(
             session,
-            lambda client, headers: client.post(
-                url, headers={**headers, "Content-Type": "application/json"}
+            lambda client, headers: (
+                client.post(
+                    url, headers={**headers, "Content-Type": "application/json"}
+                )
+                if body is None
+                else client.post(url, headers=headers, json=body)
             ),
         )
 
@@ -417,6 +514,15 @@ def _body(
     if not isinstance(body, Mapping):
         raise ProviderError("the Contabo answer has an unexpected shape")
     return body
+
+
+def _created_instance_id(body: Mapping[str, _Json]) -> str | None:
+    """Return the id of the instance a creation answer names, if it names one."""
+    for item in _data_items(body):
+        identifier = item.get("instanceId")
+        if isinstance(identifier, int) and not isinstance(identifier, bool):
+            return str(identifier)
+    return None
 
 
 def _data_items(body: Mapping[str, _Json]) -> list[Mapping[str, _Json]]:

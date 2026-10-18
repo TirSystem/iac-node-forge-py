@@ -10,6 +10,7 @@ from iac_node_forge.application.dto import (
     PowerOutcome,
 )
 from iac_node_forge.application.errors import (
+    NotAPowerActionError,
     PowerActionUnsupportedError,
     ServerNotFoundError,
 )
@@ -22,7 +23,7 @@ from iac_node_forge.application.use_cases._configuration_lookup import (
     find_configuration,
 )
 from iac_node_forge.domain.operation import OperationState
-from iac_node_forge.domain.power_action import PowerAction
+from iac_node_forge.domain.power_action import POWER_ACTIONS, PowerAction
 from iac_node_forge.domain.provider_configuration import ProviderConfiguration
 
 # The state text both providers report once the action has been done. RESTART
@@ -65,8 +66,10 @@ class ControlServerPower:
         """Check everything but the confirmation; send and record nothing.
 
         The outcome is READY when the action can be asked for, so the client
-        can state what will happen, or the reason it cannot.
+        can state what will happen, or the reason it cannot. Raises
+        NotAPowerActionError for PROVISION, which is not a power action.
         """
+        _require_power_action(action)
         return self._check(configuration, server_identifier, action).result
 
     def request_power_action(
@@ -84,8 +87,10 @@ class ControlServerPower:
         that rejects the request yields REJECTED with a FAILED operation, and
         the request is not repeated. Raises the use case and provider errors
         of the reads (configuration not found, unreachable, rejected
-        credentials).
+        credentials). Raises NotAPowerActionError for PROVISION, which is not a
+        power action; nothing is read or sent then.
         """
+        _require_power_action(action)
         checked = self._check(configuration, server_identifier, action)
         ready = checked.result
         if ready.outcome is not PowerOutcome.READY:
@@ -170,6 +175,14 @@ class ControlServerPower:
             outcome=PowerOutcome.REJECTED if failed else PowerOutcome.REQUESTED,
             reason=(operation.detail or "") if failed else "",
             operation=OperationSummary.of(operation),
+        )
+
+
+def _require_power_action(action: PowerAction) -> None:
+    if action not in POWER_ACTIONS:
+        raise NotAPowerActionError(
+            f"{action.value!r} is not a power action; the power use case "
+            "accepts " + ", ".join(a.value for a in POWER_ACTIONS)
         )
 
 

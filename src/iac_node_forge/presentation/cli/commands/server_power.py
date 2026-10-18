@@ -15,7 +15,7 @@ from iac_node_forge.application.dto import (
     PowerOutcome,
 )
 from iac_node_forge.application.use_cases import ControlServerPower
-from iac_node_forge.domain.power_action import PowerAction
+from iac_node_forge.domain.power_action import POWER_ACTIONS, PowerAction
 from iac_node_forge.presentation.cli import exit_codes
 from iac_node_forge.presentation.cli.commands._follow import (
     add_wait_options,
@@ -30,7 +30,7 @@ from iac_node_forge.presentation.cli.provider_resolver import (
 from iac_node_forge.presentation.cli.services import CliServices
 
 PROGRAM = "iac-node-forge server"
-VERBS: tuple[str, ...] = tuple(action.value for action in PowerAction)
+VERBS: tuple[str, ...] = tuple(action.value for action in POWER_ACTIONS)
 
 _NOT_MANAGED_NOTICE = "This server is not managed by this client."
 _YES_ANSWERS = frozenset({"y", "yes"})
@@ -95,7 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     verbs = parser.add_subparsers(dest="verb", metavar="action", required=True)
-    for action in PowerAction:
+    for action in POWER_ACTIONS:
         sub = verbs.add_parser(
             action.value,
             help=_HELP[action],

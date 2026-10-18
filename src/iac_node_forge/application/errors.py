@@ -36,6 +36,14 @@ class PowerActionUnsupportedError(ProviderError):
     """The provider does not declare the capability of the power action."""
 
 
+class ProvisionUnsupportedError(ProviderError):
+    """The provider does not declare the capability to create a server."""
+
+
+class NotAPowerActionError(Exception):
+    """A power operation was asked for an action that is not a power action."""
+
+
 class UnknownOptionKindError(ProviderError):
     """The provider does not offer options of the requested kind."""
 

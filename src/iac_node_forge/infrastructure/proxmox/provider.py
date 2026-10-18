@@ -1,12 +1,14 @@
-"""ProviderPort and ServerPowerPort implementation for Proxmox VE.
+"""ProviderPort, ServerPowerPort and ServerProvisionPort for Proxmox VE.
 
 Authentication is by Proxmox VE API token only in this slice: the secret of
 the credentials is the full token string ``USER@REALM!TOKENID=SECRET`` and is
 sent as ``Authorization: PVEAPIToken=<secret>``. Ticket login
 (``POST /access/ticket``) is out of scope. Every request is a GET except the
 four power POSTs of ``_POWER_VERB`` (``status/start``, ``shutdown``, ``stop``
-and ``reboot`` of one VM or container); no other write path exists here
-(ADR-0006). The power POSTs need the ``VM.PowerMgmt`` permission.
+and ``reboot`` of one VM or container) and the two creations of
+``_provision`` (``POST /nodes/{node}/lxc`` and ``/qemu``); no other write path
+exists here (ADR-0006, ADR-0007). The power POSTs need the ``VM.PowerMgmt``
+permission and a creation needs ``VM.Allocate``.
 """
 
 import re
@@ -19,6 +21,7 @@ import httpx
 
 from iac_node_forge.application import capabilities
 from iac_node_forge.application.errors import (
+    PowerActionUnsupportedError,
     ProviderAuthenticationError,
     ProviderError,
     ServerNotFoundError,
@@ -27,17 +30,21 @@ from iac_node_forge.application.errors import (
 from iac_node_forge.domain.access_result import AccessResult
 from iac_node_forge.domain.capability import Capability
 from iac_node_forge.domain.credentials import Credentials
+from iac_node_forge.domain.desired_configuration import DesiredConfiguration
 from iac_node_forge.domain.operation import Operation, OperationState
 from iac_node_forge.domain.power_action import PowerAction
 from iac_node_forge.domain.provider_configuration import ProviderConfiguration
 from iac_node_forge.domain.provider_kind import ProviderKind
 from iac_node_forge.domain.server import Server
 from iac_node_forge.domain.server_option import ServerOption
+from iac_node_forge.domain.value_rule import ValueRule
 from iac_node_forge.infrastructure import _http, _power
+from iac_node_forge.infrastructure.proxmox import _provision
 
 API_PREFIX = "/api2/json"
 OPTION_KIND_NODE = "node"
 OPTION_KIND_STORAGE = "storage"
+OPTION_KIND_TEMPLATE = "template"
 CAPABILITY_LIST_SERVERS = capabilities.LIST_SERVERS
 CAPABILITY_LIST_SERVER_OPTIONS = capabilities.LIST_SERVER_OPTIONS
 CAPABILITY_INSPECT_SERVER = capabilities.INSPECT_SERVER
@@ -45,6 +52,9 @@ DEFAULT_TIMEOUT_SECONDS = 10.0
 _BYTES_PER_MIB = 1024 * 1024
 _UNKNOWN_STATE = "unknown"
 _POWER_PERMISSION = "VM.PowerMgmt"
+# Content types of a storage that can hold what a creation starts from: a
+# container template (lxc) or an installation image (qemu).
+_TEMPLATE_CONTENT_TYPES = ("vztmpl", "iso")
 _TASK_RUNNING = "running"
 _TASK_STOPPED = "stopped"
 _EXIT_OK = "OK"
@@ -109,24 +119,26 @@ class ProxmoxProvider:
     def discover_capabilities(
         self, configuration: ProviderConfiguration
     ) -> frozenset[Capability]:
-        """Return the read capabilities and the four power capabilities."""
+        """Return the read, the four power and the provision capabilities."""
         return frozenset(
             Capability(name)
             for name in (
                 CAPABILITY_LIST_SERVERS,
                 CAPABILITY_LIST_SERVER_OPTIONS,
                 CAPABILITY_INSPECT_SERVER,
-                *capabilities.POWER_ACTION_CAPABILITY.values(),
+                *capabilities.ACTION_CAPABILITY.values(),
             )
         )
 
     def list_server_options(
         self, configuration: ProviderConfiguration, option_kind: str
     ) -> tuple[ServerOption, ...]:
-        """Return ``node`` or ``storage`` options.
+        """Return ``node``, ``storage`` or ``template`` options.
 
         A storage option value is ``<node>/<storage>``, because storage is
-        read per node and a name such as ``local`` exists on every node.
+        read per node and a name such as ``local`` exists on every node. A
+        template option value is ``<node>/<volume id>`` of a container template
+        or an ISO image found in the content of the node's storages.
 
         Raises UnknownOptionKindError for any other kind.
         """
@@ -137,6 +149,8 @@ class ProxmoxProvider:
             )
         if option_kind == OPTION_KIND_STORAGE:
             return self._storage_options(configuration)
+        if option_kind == OPTION_KIND_TEMPLATE:
+            return self._template_options(configuration)
         raise UnknownOptionKindError(
             f"Proxmox VE offers no options of kind {option_kind!r}; valid kinds: "
             + ", ".join(ProviderKind.PROXMOX_VE.option_kinds)
@@ -170,8 +184,11 @@ class ProxmoxProvider:
 
         A provider failure (401, 403, 5xx, unreachable ...) gives a FAILED
         operation; a 403 names the ``VM.PowerMgmt`` permission. Raises
-        ServerNotFoundError when no VM or container has the identifier.
+        ServerNotFoundError when no VM or container has the identifier and
+        PowerActionUnsupportedError for PROVISION, which is not a power action.
         """
+        if action not in _POWER_VERB:
+            raise PowerActionUnsupportedError(f"{action.value} is not a power action")
         started_at = self._clock()
         try:
             node, guest_type = self._locate(configuration, server_identifier)
@@ -179,7 +196,7 @@ class ProxmoxProvider:
                 f"/nodes/{quote(node, safe='')}/{guest_type}/{server_identifier}"
                 f"/status/{_POWER_VERB[action]}"
             )
-            upid = self._post(configuration.address, path)
+            upid = self._post(configuration.address, path, _POWER_PERMISSION)
         except ServerNotFoundError:
             raise
         except ProviderError as error:
@@ -190,10 +207,63 @@ class ProxmoxProvider:
             configuration, server_identifier, action, started_at, upid
         )
 
+    def value_rules(
+        self, configuration: ProviderConfiguration
+    ) -> tuple[ValueRule, ...]:
+        """Return the values a container or virtual machine creation needs."""
+        return _provision.value_rules()
+
+    def reserve_identifier(self, configuration: ProviderConfiguration) -> str | None:
+        """Return the next free VM or container id from ``/cluster/nextid``."""
+        data = self._get_data(configuration.address, "/cluster/nextid")
+        vmid = str(data) if isinstance(data, str | int) else ""
+        if not _VMID.fullmatch(vmid):
+            raise ProviderError("the provider gave no usable next identifier")
+        return vmid
+
+    def cost_consequence(
+        self, configuration: ProviderConfiguration, desired: DesiredConfiguration
+    ) -> str | None:
+        """Proxmox VE imposes no commitment: always None."""
+        return None
+
+    def request_provision(
+        self,
+        configuration: ProviderConfiguration,
+        desired: DesiredConfiguration,
+        server_name: str,
+        reserved_identifier: str | None,
+    ) -> Operation:
+        """Send one create POST; the answer's task identifier is the reference.
+
+        The new server's identifier is the vmid: ``reserved_identifier`` or,
+        when None, the next free id read now. A provider failure gives a FAILED
+        operation; a 401 or 403 names the ``VM.Allocate`` permission.
+        """
+        started_at = self._clock()
+        vmid = reserved_identifier
+        try:
+            if vmid is None:
+                vmid = self.reserve_identifier(configuration)
+            request = _provision.build_request(desired, server_name, vmid or "")
+            upid = self._post(
+                configuration.address, request.path, _provision.PERMISSION, request.form
+            )
+        except ProviderError as error:
+            return _power.failed_operation(
+                configuration, None, PowerAction.PROVISION, started_at, str(error)
+            )
+        return _power.running_operation(
+            configuration, vmid, PowerAction.PROVISION, started_at, upid
+        )
+
     def operation_state(
         self, configuration: ProviderConfiguration, operation: Operation
     ) -> Operation:
-        """Read the task status once: running, OK, or another exit status."""
+        """Read the task status once: running, OK, or another exit status.
+
+        The same reading serves a power action and a provision: both are tasks.
+        """
         if operation.has_ended:
             return operation
         upid = operation.provider_reference
@@ -262,21 +332,65 @@ class ProxmoxProvider:
             )
         return tuple(options)
 
+    def _template_options(
+        self, configuration: ProviderConfiguration
+    ) -> tuple[ServerOption, ...]:
+        """List the templates and ISO images of every storage of every node."""
+        address = configuration.address
+        options: list[ServerOption] = []
+        for node in self._node_names(configuration):
+            quoted_node = quote(node, safe="")
+            for content in _TEMPLATE_CONTENT_TYPES:
+                storages = self._get_data(
+                    address, f"/nodes/{quoted_node}/storage?content={content}"
+                )
+                for storage in _as_list(storages):
+                    if not isinstance(storage, Mapping) or "storage" not in storage:
+                        continue
+                    listing = self._get_data(
+                        address,
+                        f"/nodes/{quoted_node}/storage/"
+                        f"{quote(str(storage['storage']), safe='')}"
+                        f"/content?content={content}",
+                    )
+                    options.extend(
+                        ServerOption(OPTION_KIND_TEMPLATE, f"{node}/{item['volid']}")
+                        for item in _as_list(listing)
+                        if isinstance(item, Mapping) and "volid" in item
+                    )
+        return tuple(options)
+
     def _get_data(self, address: str, path: str) -> _Json:
         return self._get(address, path, self._credentials)
 
     def _get(self, address: str, path: str, credentials: Credentials) -> _Json:
         return self._send("GET", address, path, credentials)
 
-    def _post(self, address: str, path: str) -> str:
-        """POST a power request (no body) and return the task identifier."""
-        data = self._send("POST", address, path, self._credentials)
+    def _post(
+        self,
+        address: str,
+        path: str,
+        permission: str,
+        form: Mapping[str, str] | None = None,
+    ) -> str:
+        """POST a write request and return the task identifier.
+
+        A power request has no body; a creation sends its fields as a form.
+        ``permission`` is the one a 401 or 403 says the token may lack.
+        """
+        data = self._send("POST", address, path, self._credentials, form, permission)
         if not isinstance(data, str) or not data.startswith(_UPID_PREFIX):
             raise ProviderError("the provider answer holds no task identifier")
         return data
 
     def _send(
-        self, method: str, address: str, path: str, credentials: Credentials
+        self,
+        method: str,
+        address: str,
+        path: str,
+        credentials: Credentials,
+        form: Mapping[str, str] | None = None,
+        permission: str | None = None,
     ) -> _Json:
         url = _http.base_url(address) + API_PREFIX + path
         headers = {"Authorization": f"PVEAPIToken={credentials.get('token')}"}
@@ -284,10 +398,10 @@ class ProxmoxProvider:
             with httpx.Client(
                 verify=_http.tls_verify(self._verify), timeout=self._timeout
             ) as client:
-                response = client.request(method, url, headers=headers)
+                response = client.request(method, url, headers=headers, data=form)
         except httpx.TransportError as error:
             raise _http.unreachable_error(error, self._timeout) from error
-        return _payload(response, is_write=method != "GET")
+        return _payload(response, permission)
 
 
 def _upid_node(upid: str) -> str:
@@ -299,10 +413,10 @@ def _upid_node(upid: str) -> str:
     return node
 
 
-def _payload(response: httpx.Response, is_write: bool = False) -> _Json:
+def _payload(response: httpx.Response, permission: str | None = None) -> _Json:
     status = response.status_code
     if status in (401, 403):
-        needed = f"; a power request needs {_POWER_PERMISSION}" if is_write else ""
+        needed = f"; this request needs {permission}" if permission else ""
         raise ProviderAuthenticationError(
             f"the provider answered {status}: token rejected or not permitted" + needed
         )

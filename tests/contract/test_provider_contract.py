@@ -9,11 +9,13 @@ import logging
 
 import pytest
 
+from iac_node_forge.application.capabilities import PROVISION_SERVER
 from iac_node_forge.application.errors import (
     ServerNotFoundError,
     UnknownOptionKindError,
 )
 from iac_node_forge.application.ports import ProviderPort
+from iac_node_forge.domain.capability import Capability
 from tests.contract.conftest import ALL_CAPABILITIES
 from tests.contract.provider_under_test import ProviderUnderTest
 
@@ -57,16 +59,16 @@ def test_discover_capabilities_returns_read_and_power_set(
     assert capabilities == ALL_CAPABILITIES
 
 
-def test_discover_capabilities_declares_no_write_beyond_power(
+def test_discover_capabilities_declares_no_write_beyond_power_and_provision(
     provider_under_test: ProviderUnderTest,
 ) -> None:
     capabilities = provider_under_test.provider.discover_capabilities(
         provider_under_test.configuration
     )
-    # The four power capabilities are the only declared writes (ADR-0006).
+    # The four power capabilities and provision_server are the only declared
+    # writes (ADR-0006, ADR-0007).
     write_words = (
         "create",
-        "provision",
         "update",
         "delete",
         "remove",
@@ -81,6 +83,7 @@ def test_discover_capabilities_declares_no_write_beyond_power(
     assert not [
         c.name for c in capabilities if any(word in c.name for word in write_words)
     ]
+    assert Capability(PROVISION_SERVER) in capabilities
 
 
 def test_list_server_options_returns_options_of_each_kind(

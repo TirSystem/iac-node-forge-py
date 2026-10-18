@@ -7,6 +7,9 @@ from iac_node_forge.application.ports.operation_store import OperationStore
 from iac_node_forge.application.ports.provider_port import ProviderPort
 from iac_node_forge.application.ports.provider_resolver import ProviderResolver
 from iac_node_forge.application.ports.server_power_port import ServerPowerPort
+from iac_node_forge.application.ports.server_provision_port import (
+    ServerProvisionPort,
+)
 
 __all__ = [
     "ConfigurationStore",
@@ -16,4 +19,5 @@ __all__ = [
     "ProviderPort",
     "ProviderResolver",
     "ServerPowerPort",
+    "ServerProvisionPort",
 ]

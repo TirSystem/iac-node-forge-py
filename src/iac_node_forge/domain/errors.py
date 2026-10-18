@@ -35,3 +35,15 @@ class OperationStateError(DomainError):
 
 class OperationTextTooLongError(DomainError):
     """The detail or the provider reference of an operation exceeds its bound."""
+
+
+class BootstrapHintTooLongError(DomainError):
+    """The bootstrap hint of a desired configuration exceeds its bound."""
+
+
+class DuplicateValueNameError(DomainError):
+    """Two provider values of one description carry the same name."""
+
+
+class InvalidValueRuleError(DomainError):
+    """A value rule contradicts itself, such as a minimum above its maximum."""
