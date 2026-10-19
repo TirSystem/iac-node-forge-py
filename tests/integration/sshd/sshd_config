@@ -1,0 +1,24 @@
+# sshd of the throw-away test container: public key only, one user.
+Port 22
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_ecdsa_key
+HostKey /etc/ssh/ssh_host_rsa_key
+AllowUsers tester
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
+StrictModes yes
+AllowTcpForwarding no
+X11Forwarding no
+PermitTunnel no
+PrintMotd no
+LogLevel ERROR
+MaxStartups 100:30:200
+MaxSessions 100
+# keyscan and refused log-ins are normal in the tests: do not ban the client
+PerSourcePenalties no
+# The OpenSSH client of Windows 10 and 11 (9.5) fails on the post-quantum key exchange
+# that a 9.9 server offers first; keep to the classic ones so both clients work.
+KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group-exchange-sha256

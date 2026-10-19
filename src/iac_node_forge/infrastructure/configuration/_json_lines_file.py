@@ -30,8 +30,10 @@ from iac_node_forge.domain.provider_configuration import (
 )
 from iac_node_forge.domain.provider_kind import ProviderKind
 from iac_node_forge.domain.provision_intent import IntentId, ProvisionIntent
+from iac_node_forge.domain.server_access import ServerAccess
+from iac_node_forge.infrastructure.configuration import _access_rows as access
 from iac_node_forge.infrastructure.configuration import _provisioning_rows as prov
-from iac_node_forge.infrastructure.configuration._rows import Row, text
+from iac_node_forge.infrastructure.configuration._rows import Row, optional_text, text
 
 _OWNER_ONLY = 0o600
 
@@ -77,6 +79,7 @@ _FIELDS: dict[str, frozenset[str]] = {
         }
     ),
     **prov.FIELDS,
+    **access.FIELDS,
 }
 # Fields a file written before the removal of a server (MIL-006) does not have;
 # a missing one reads as null, and every write includes them.
@@ -96,6 +99,7 @@ _NULLABLE = frozenset(
         "consequence",
     }
     | prov.NULLABLE
+    | access.NULLABLE
 )
 
 
@@ -111,6 +115,7 @@ class Snapshot:
     operations: dict[OperationId, Operation] = field(default_factory=dict)
     desired: dict[prov.DesiredKey, DesiredConfiguration] = field(default_factory=dict)
     intents: dict[IntentId, ProvisionIntent] = field(default_factory=dict)
+    accesses: dict[access.AccessKey, ServerAccess] = field(default_factory=dict)
 
 
 def read_snapshot(path: Path) -> Snapshot:
@@ -139,6 +144,7 @@ def write_snapshot(path: Path, snapshot: Snapshot) -> None:
         rows += prov.desired_rows(desired)
     for intent in snapshot.intents.values():
         rows += prov.intent_rows(intent)
+    rows += [access.access_row(a) for a in snapshot.accesses.values()]
     payload = "".join(
         json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
         for row in rows
@@ -235,9 +241,17 @@ def _parse_line(number: int, line: str) -> Row:
     for key in _OPTIONAL.get(record_type, frozenset()) - set(row):
         row[key] = None
     for key, value in row.items():
-        if not (isinstance(value, str) or (key in _NULLABLE and value is None)):
-            raise ConfigurationFormatError(f"line {number}: field {key!r} not text")
+        if not (
+            isinstance(value, str)
+            or (key in _NULLABLE and value is None)
+            or (key in access.INTEGER and _is_whole_number(value))
+        ):
+            raise ConfigurationFormatError(f"line {number}: field {key!r} not valid")
     return row
+
+
+def _is_whole_number(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _build(rows: list[Row]) -> Snapshot:
@@ -265,6 +279,10 @@ def _collect(rows: list[Row], snapshot: Snapshot) -> None:
         elif kind == _OPERATION:
             operation = _operation(row)
             snapshot.operations[operation.operation_id] = operation
+        elif kind == access.ACCESS:
+            server_access = access.access_from_row(row)
+            key = (server_access.configuration_id, server_access.server_identifier)
+            snapshot.accesses[key] = server_access
         else:
             records.add(row)
     snapshot.desired = records.desired_configurations()
@@ -274,7 +292,7 @@ def _collect(rows: list[Row], snapshot: Snapshot) -> None:
 def _configuration(
     row: Row, references: dict[str, CredentialReference]
 ) -> ProviderConfiguration:
-    name = row["credential_reference_name"]
+    name = optional_text(row, "credential_reference_name")
     if name is not None and name not in references:
         raise ConfigurationFormatError("configuration names an unknown reference")
     return ProviderConfiguration(
@@ -287,8 +305,8 @@ def _configuration(
 
 
 def _managed(row: Row) -> ManagedServerRecord:
-    ended_at = row["ended_at"]
-    ended_by = row["ended_by_operation_id"]
+    ended_at = optional_text(row, "ended_at")
+    ended_by = optional_text(row, "ended_by_operation_id")
     return ManagedServerRecord(
         ConfigurationId(text(row, "configuration_id")),
         text(row, "server_identifier"),
@@ -299,16 +317,16 @@ def _managed(row: Row) -> ManagedServerRecord:
 
 
 def _operation(row: Row) -> Operation:
-    finished_at = row["finished_at"]
+    finished_at = optional_text(row, "finished_at")
     return Operation(
         operation_id=OperationId(text(row, "operation_id")),
         configuration_id=ConfigurationId(text(row, "configuration_id")),
-        server_identifier=row["server_identifier"],
+        server_identifier=optional_text(row, "server_identifier"),
         action=PowerAction(text(row, "action")),
         state=OperationState(text(row, "state")),
         started_at=datetime.fromisoformat(text(row, "started_at")),
         finished_at=datetime.fromisoformat(finished_at) if finished_at else None,
-        provider_reference=row["provider_reference"],
-        detail=row["detail"],
-        consequence=row["consequence"],
+        provider_reference=optional_text(row, "provider_reference"),
+        detail=optional_text(row, "detail"),
+        consequence=optional_text(row, "consequence"),
     )

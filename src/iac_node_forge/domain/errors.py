@@ -52,3 +52,23 @@ class DuplicateValueNameError(DomainError):
 
 class InvalidValueRuleError(DomainError):
     """A value rule contradicts itself, such as a minimum above its maximum."""
+
+
+class InvalidServerAccessError(DomainError):
+    """The host, port, user or identity hint of a server access is not valid.
+
+    The message names the field and never repeats the value, which could be
+    key material someone pasted in.
+    """
+
+
+class InvalidRemotePathError(DomainError):
+    """A path on the server or a path inside a manifest is not valid."""
+
+
+class InvalidManifestError(DomainError):
+    """A manifest entry contradicts its kind, or two entries share a path."""
+
+
+class InvalidTransferReportError(DomainError):
+    """A transfer report holds a negative count, a naive time or a long note."""

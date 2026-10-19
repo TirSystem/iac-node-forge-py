@@ -121,3 +121,41 @@ class ProvisionIntentNotFoundError(UseCaseError):
 
 class NoConfigurationError(UseCaseError):
     """No provider is configured yet."""
+
+
+class TransferError(Exception):
+    """Base class of every error a transfer adapter raises (ADR-0009).
+
+    The text is bounded and never carries a secret: it is a fixed sentence,
+    or the first line of what ssh said with anything secret-looking removed.
+    """
+
+
+class ConnectionFailedError(TransferError):
+    """The server could not be reached or the connection broke."""
+
+
+class PermissionDeniedError(TransferError):
+    """The server refused the log-in, or the user may not read or write a path."""
+
+
+class HostKeyChangedError(TransferError):
+    """The host key differs from the one in known_hosts; never accepted."""
+
+
+class HostKeyUnknownError(TransferError):
+    """The host has no entry in known_hosts, or the key shown is not the one
+    that was accepted."""
+
+
+class RemotePathNotFoundError(TransferError):
+    """A path on the server does not exist."""
+
+
+class TransferFailedError(TransferError):
+    """The remote command or the stream failed, or timed out, during a copy."""
+
+
+class UnsafeArchiveError(TransferFailedError):
+    """The server sent a member that is not under a requested path, or whose
+    name is absolute or climbs out of the destination."""

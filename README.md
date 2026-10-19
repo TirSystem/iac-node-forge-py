@@ -406,3 +406,48 @@ $env:PVE_PROVISION_TEST_TEMPLATE = 'local:vztmpl/<template>'
 $env:PVE_PROVISION_TEST_CONFIRM = 'create-server-iacnf-live'
 pytest -m integration -k provision -v
 ```
+
+## File transfer integration test (starts a throw-away SSH server)
+
+The transfer contract suite (`tests/contract/test_transfer_contract.py`) runs
+every behaviour twice: against an in-process fake, which is part of the default
+suite, and against the OpenSSH adapters and a real `sshd`. The second variant is
+marked `integration`, so a plain `pytest` leaves it out.
+
+It starts a throw-away container `iacnf-sshd` (`tests/integration/sshd/`, built
+from the public image `alpine` and its `openssh-server` only), published on
+`127.0.0.1:2222` and nowhere else. The run makes a new ed25519 key pair without
+a passphrase in a temporary directory and gives the container the public key;
+the user `tester` logs in by key only, and there is no password. The tests
+read and write only a temporary `known_hosts` and an empty `ssh_config`, switch
+the agent off, and use only that key, so your own `~/.ssh` is never read or
+changed (`tests/unit/infrastructure/openssh/test_openssh_isolation.py` guards
+this). The container is removed when the run ends.
+
+Prerequisites: Docker, and the OpenSSH client (`ssh`, `ssh-keygen`,
+`ssh-keyscan`). Nothing runs, and each test is skipped with the reason, unless
+`IACNF_SSHD_TEST` is `1`. Run it on your own machine only, not in CI.
+
+| Variable | Meaning |
+| --- | --- |
+| `IACNF_SSHD_TEST` | `1` to allow the tests to build and start the container |
+
+bash:
+
+```bash
+export IACNF_SSHD_TEST=1
+pytest -m integration tests/contract/test_transfer_contract.py -v
+```
+
+PowerShell:
+
+```powershell
+$env:IACNF_SSHD_TEST = '1'
+pytest -m integration tests/contract/test_transfer_contract.py -v
+```
+
+The first run builds the image, which needs network access to pull `alpine`.
+The test that checks a destination without room is skipped in this variant: the
+room can only be set in the fake, and `LocalDiskFilesystem.free_bytes` has a
+unit test of its own. To start the server by hand, see the comment in
+`tests/integration/docker-compose.sshd.yml`.
