@@ -3,7 +3,7 @@
 import argparse
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import redirect_stderr, redirect_stdout
 
 from iac_node_forge.application.errors import ConfigurationFormatError, UseCaseError
@@ -16,9 +16,12 @@ from iac_node_forge.presentation.cli.commands import (
     options,
     provider_add,
     server,
+    server_access,
+    server_backup,
     server_power,
     server_provision,
     server_remove,
+    server_restore,
     servers,
 )
 from iac_node_forge.presentation.cli.composition import build_services
@@ -49,7 +52,11 @@ exit codes:
      server of that name exists or an earlier request for it is not finished;
      for 'server remove' also: removal is unsupported, the server is running or
      already removed, the typed identifier is wrong, the confirmation is missing
-     or refused, or the provider rejected the request
+     or refused, or the provider rejected the request;
+     for 'server access|backup|restore' also: no access is recorded, the server
+     is not running, the host key is unknown or changed, a path is missing, the
+     destination is not empty or has no room, the confirmation is missing or
+     wrong, or the copy could not be verified
   2  usage error
 
 power commands (they change the state of a server):
@@ -77,7 +84,32 @@ removal (deleting or cancelling a server is a write and cannot be undone):
       date), asks you to type the identifier, sends one request and follows the
       operation; an unmanaged server needs the identifier typed twice;
       a running server is refused, never stopped; see 'server remove --help'
+
+files on a server (over your own ssh; no password, key or token is stored):
+  server access <configuration> <identifier> --user USER [--host H] [--port P]
+      records how to reach the server
+  server backup <configuration> <identifier> <remote-path>... --to LOCAL_DIR
+                [--accept-host-key FINGERPRINT]
+      reads only on the server, copies and verifies by checksum
+  server restore <configuration> <identifier> <local-path>... --to REMOTE_DIR
+                [--report-dir DIR] [--yes] [--confirm-unmanaged ID]
+                [--accept-host-key FINGERPRINT]
+      replaces what is there and keeps no previous version; asks you to type
+      the identifier; see 'server backup --help' and 'server restore --help'
 """
+
+
+type _Matcher = Callable[[Sequence[str]], bool]
+type _ParserBuilder = Callable[[], argparse.ArgumentParser]
+
+_SERVER_GROUPS: tuple[tuple[_Matcher, _ParserBuilder], ...] = (
+    (server_power.is_power_request, server_power.build_parser),
+    (server_provision.is_provision_request, server_provision.build_parser),
+    (server_remove.is_remove_request, server_remove.build_parser),
+    (server_access.is_access_request, server_access.build_parser),
+    (server_backup.is_backup_request, server_backup.build_parser),
+    (server_restore.is_restore_request, server_restore.build_parser),
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -137,12 +169,9 @@ def main(argv: Sequence[str] | None = None, services: CliServices | None = None)
 
 def _server_group_parser(words: Sequence[str]) -> argparse.ArgumentParser | None:
     """Return the parser of ``server <verb> ...`` when ``words`` is such a command."""
-    if server_power.is_power_request(words):
-        return server_power.build_parser()
-    if server_provision.is_provision_request(words):
-        return server_provision.build_parser()
-    if server_remove.is_remove_request(words):
-        return server_remove.build_parser()
+    for matches, build in _SERVER_GROUPS:
+        if matches(words):
+            return build()
     return None
 
 

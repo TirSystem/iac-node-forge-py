@@ -16,6 +16,7 @@ import pytest
 from iac_node_forge.infrastructure.credentials import ConsoleCredentialPrompt
 from iac_node_forge.presentation.cli.composition import build_services
 from iac_node_forge.presentation.cli.main import main
+from iac_node_forge.presentation.cli.services import TransferServices
 from tests.contract.conftest import CONTABO_VALUES, TOKEN, mock_contabo, mock_proxmox
 from tests.contract.mock_contabo import MockContaboServer
 from tests.contract.mock_proxmox import MockProxmoxServer
@@ -100,6 +101,8 @@ class MultiProviderSession:
     interactive: bool = False
     answers: list[str] = field(default_factory=list)
     questions: list[str] = field(default_factory=list)
+    # Replaces the OpenSSH adapters: a test never runs ssh or touches ~/.ssh.
+    transfer: TransferServices | None = None
 
     def run(self, *argv: str) -> Result:
         out, err = io.StringIO(), io.StringIO()
@@ -116,6 +119,7 @@ class MultiProviderSession:
             credential_prompt=ConsoleCredentialPrompt(self._read_secret),
             read_line=self._read_answer,
             is_interactive=self.interactive,
+            transfer=self.transfer or real.transfer,
         )
         return Result(main(list(argv), services), out.getvalue(), err.getvalue())
 

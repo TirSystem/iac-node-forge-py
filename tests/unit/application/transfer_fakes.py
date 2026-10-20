@@ -35,6 +35,7 @@ from iac_node_forge.domain.remote_path import (
 from iac_node_forge.domain.server_access import RemoteAccess, ServerAccess
 from iac_node_forge.domain.transfer_report import OverwriteEntry, SkippedEntry
 from iac_node_forge.infrastructure.filesystem import LocalDiskFilesystem
+from iac_node_forge.presentation.cli.services import TransferServices
 
 KIBIBYTE = 1024
 EPOCH = datetime(2026, 1, 1, tzinfo=UTC)
@@ -412,3 +413,22 @@ def _write_link(
         skipped.append(SkippedEntry(remote_path, "refused: absolute link target"))
         return
     os.symlink(node.target, local)
+
+
+@dataclass
+class FakeTransferBundle:
+    """The fake server, local disk and access store a command-line test shares."""
+
+    host: FakeRemoteHost = field(default_factory=FakeRemoteHost)
+    filesystem: FakeLocalFilesystem = field(default_factory=FakeLocalFilesystem)
+    accesses: FakeServerAccessStore = field(default_factory=FakeServerAccessStore)
+
+    def services(self) -> TransferServices:
+        """Return the CLI services that use these fakes."""
+        return TransferServices(
+            server_access=self.accesses,
+            remote_reader=self.host,
+            file_transfer=self.host,
+            known_hosts=self.host,
+            local_filesystem=self.filesystem,
+        )

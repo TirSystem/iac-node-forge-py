@@ -20,6 +20,7 @@ from tests.unit.application.fakes import (
     FakeProvisionIntentStore,
 )
 from tests.unit.application.samples import SECRET
+from tests.unit.application.transfer_fakes import FakeTransferBundle
 
 
 @dataclass(slots=True)
@@ -53,6 +54,7 @@ class Harness:
         default_factory=lambda: FakeCredentialPrompt(SECRET)
     )
     providers_by_secret: dict[str, ProviderPort] = field(default_factory=dict)
+    transfer: FakeTransferBundle = field(default_factory=FakeTransferBundle)
     answers: Iterable[str] = ()
     asked: list[str] = field(default_factory=list)
     secrets_used: list[str] = field(default_factory=list)
@@ -76,6 +78,7 @@ class Harness:
             credential_store=self.credential_store,
             credential_prompt=self.prompt,
             provider_factory=self._factory,
+            transfer=self.transfer.services(),
             read_line=read_line,
             stdout=out,
             stderr=err,

@@ -13,6 +13,7 @@ from iac_node_forge.infrastructure.configuration import (
     JsonLinesDesiredConfigurationStore,
     JsonLinesOperationStore,
     JsonLinesProvisionIntentStore,
+    JsonLinesServerAccessStore,
     default_configuration_path,
 )
 from iac_node_forge.infrastructure.contabo import (
@@ -24,9 +25,15 @@ from iac_node_forge.infrastructure.credentials import (
     ConsoleCredentialPrompt,
     PlatformCredentialStore,
 )
+from iac_node_forge.infrastructure.filesystem import LocalDiskFilesystem
+from iac_node_forge.infrastructure.openssh import (
+    OpenSshFileTransfer,
+    OpenSshKnownHosts,
+    OpenSshRemoteReader,
+)
 from iac_node_forge.infrastructure.proxmox import ProxmoxProvider
 from iac_node_forge.presentation.cli.output import write_line
-from iac_node_forge.presentation.cli.services import CliServices
+from iac_node_forge.presentation.cli.services import CliServices, TransferServices
 from iac_node_forge.presentation.cli.settings import (
     VERIFY_ENV_VAR,
     read_tls_verification,
@@ -84,6 +91,13 @@ def build_services(
         credential_store=PlatformCredentialStore(),
         credential_prompt=ConsoleCredentialPrompt(),
         provider_factory=provider_factory,
+        transfer=TransferServices(
+            server_access=JsonLinesServerAccessStore(path),
+            remote_reader=OpenSshRemoteReader(),
+            file_transfer=OpenSshFileTransfer(),
+            known_hosts=OpenSshKnownHosts(),
+            local_filesystem=LocalDiskFilesystem(),
+        ),
         read_line=input,
         stdout=stdout,
         stderr=stderr,

@@ -9,6 +9,7 @@ from iac_node_forge.application.errors import (
     ProviderAuthenticationError,
     ProviderError,
     ProviderUnreachableError,
+    TransferError,
     UseCaseError,
 )
 from iac_node_forge.domain.errors import DomainError
@@ -22,6 +23,7 @@ HANDLED_ERRORS: tuple[type[Exception], ...] = (
     CredentialStoreError,
     ConfigurationFormatError,
     DomainError,
+    TransferError,
     SettingsError,
     EOFError,
 )
