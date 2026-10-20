@@ -11,9 +11,14 @@ from iac_node_forge.application.ports import (
     CredentialPrompt,
     CredentialStore,
     DesiredConfigurationStore,
+    FileTransferPort,
+    KnownHostsPort,
+    LocalFilesystemPort,
     OperationStore,
     ProviderPort,
     ProvisionIntentStore,
+    RemoteReadPort,
+    ServerAccessStore,
 )
 from iac_node_forge.domain.credentials import Credentials
 from iac_node_forge.domain.provider_kind import ProviderKind
@@ -26,6 +31,17 @@ UnsupportedProviderError when no adapter exists for the kind."""
 def utc_now() -> datetime:
     """Return the current time in UTC."""
     return datetime.now(UTC)
+
+
+@dataclass(frozen=True, slots=True)
+class TransferServices:
+    """The ports behind server access, backup and restore (ADR-0009)."""
+
+    server_access: ServerAccessStore
+    remote_reader: RemoteReadPort
+    file_transfer: FileTransferPort
+    known_hosts: KnownHostsPort
+    local_filesystem: LocalFilesystemPort
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +60,7 @@ class CliServices:
     credential_store: CredentialStore
     credential_prompt: CredentialPrompt
     provider_factory: ProviderFactory
+    transfer: TransferServices
     read_line: Callable[[str], str]
     stdout: TextIO
     stderr: TextIO

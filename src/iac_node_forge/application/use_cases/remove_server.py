@@ -29,6 +29,7 @@ from iac_node_forge.application.ports import (
 from iac_node_forge.application.use_cases._configuration_lookup import (
     find_configuration,
 )
+from iac_node_forge.application.use_cases._confirmation import confirmation_refusal
 from iac_node_forge.domain.operation import Operation, OperationId, OperationState
 from iac_node_forge.domain.power_action import PowerAction
 from iac_node_forge.domain.provider_configuration import ProviderConfiguration
@@ -315,31 +316,14 @@ def _confirmation_refusal(
     preview: RemovalPreview, confirmation: Confirmation
 ) -> RemovalResult | None:
     """Return the refusal when the confirmation is not complete and exact."""
-    if not confirmation.given:
-        return RemovalResult(
-            RemovalOutcome.NOT_CONFIRMED, "the removal was not confirmed"
-        )
-    if confirmation.typed_identifier is None:
-        return RemovalResult(
-            RemovalOutcome.NOT_CONFIRMED,
-            "the server identifier must be typed to confirm the removal",
-        )
-    if confirmation.typed_identifier != preview.server_identifier:
-        return RemovalResult(
-            RemovalOutcome.IDENTIFIER_MISMATCH,
-            "the typed identifier does not match the server identifier",
-        )
-    if preview.managed:
+    refusal = confirmation_refusal(
+        confirmation, preview.server_identifier, preview.managed, "removal"
+    )
+    if refusal is None:
         return None
-    if confirmation.unmanaged_identifier is None:
-        return RemovalResult(
-            RemovalOutcome.NOT_CONFIRMED,
-            "the server is not managed by this client; its identifier must be "
-            "typed once more to confirm",
-        )
-    if confirmation.unmanaged_identifier != preview.server_identifier:
-        return RemovalResult(
-            RemovalOutcome.IDENTIFIER_MISMATCH,
-            "the identifier typed again does not match the server identifier",
-        )
-    return None
+    outcome = (
+        RemovalOutcome.IDENTIFIER_MISMATCH
+        if refusal.mismatch
+        else RemovalOutcome.NOT_CONFIRMED
+    )
+    return RemovalResult(outcome, refusal.reason)

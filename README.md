@@ -58,6 +58,9 @@ iac-node-forge server definitions Lab --check    # the saved descriptions
 iac-node-forge server provision Lab web --name web-2   # shows the cost, asks, creates
 iac-node-forge server remove Lab 101             # states the consequence, asks you to type the id
 iac-node-forge server remove Cloud 101 --yes --confirm-unmanaged 101
+iac-node-forge server access Lab 101 --user deploy --host 192.0.2.10
+iac-node-forge server backup Lab 101 /etc/nginx --to ./backup   # read-only on the server, verified
+iac-node-forge server restore Lab 101 ./site --to /var/www      # replaces; asks you to type the id
 ```
 
 A configuration is named by its display name (case is ignored) or its id.
@@ -179,6 +182,49 @@ Safety rules:
   operation that ended it) and no longer counts as managed.
   `operation <id>` completes a removal that has ended.
 
+### Back up and restore files on a server
+
+`server access`, `server backup` and `server restore` (UC-016, UC-017,
+ADR-0009) copy files over your own `ssh`; the client stores no password,
+passphrase, key or token.
+
+```
+iac-node-forge server access Lab 101 --user deploy [--host H] [--port P] [--identity HINT]
+iac-node-forge server backup Lab 101 /etc/nginx /var/www --to ./backup [--accept-host-key SHA256:...]
+iac-node-forge server restore Lab 101 ./site --to /var/www [--report-dir DIR] [--yes] [--confirm-unmanaged 101] [--accept-host-key SHA256:...]
+```
+
+- `server access` records the host (default: the address the provider
+  reports), the port (22), the user and an identity hint, which is a note or a
+  key file path and never key material (it is refused). Nothing is connected to.
+- The server must be running and its access recorded. Both commands print the
+  preview first: host, user, port, host key fingerprint, paths, sizes and the
+  free and required bytes (backup) or the items to overwrite (restore).
+- Host key rules: a key already in your `known_hosts` is used. A new server
+  stops the command and prints its fingerprint; check it, then repeat the
+  command with `--accept-host-key <fingerprint>`; only that exact fingerprint
+  adds one line to your `known_hosts`. A key that differs from `known_hosts`
+  stops the command and is never accepted: correct `known_hosts` by hand.
+- A backup only reads on the server. Each path is copied under the destination
+  at its full path (`/etc/nginx` becomes `<to>/etc/nginx`); the destination must
+  not exist or be empty and must have room for the data plus 10 percent and
+  16 MiB, otherwise nothing is copied. Links are copied as links; a link the
+  extraction refuses is listed in the report and left out of the comparison.
+- A restore replaces what is at the destination under the same names and does
+  not keep the previous version. The preview lists what would be replaced, and
+  nothing is copied before you type the server identifier exactly (a name or a
+  prefix is refused). A server this client does not manage needs it typed a
+  second time. Without a terminal `--yes` is required (the identifier on the
+  command line counts as typed) and, for an unmanaged server,
+  `--confirm-unmanaged <identifier>`.
+- Both directions compare the copy with the source by SHA-256 and report
+  `Copied and verified` only when they are equal; one differing byte is
+  `verification failed` and exit code 1. A JSON report is saved in the backup
+  destination, or in `--report-dir` (default: the current directory) for a
+  restore. It holds counts, paths and differences, never a secret.
+- `ssh` runs with `BatchMode`, so your key or agent must log in without a
+  prompt. No operation is recorded: the command runs to its end.
+
 ### Operation record
 
 Every power, provision or removal request is recorded as one `operation` line of
@@ -200,7 +246,7 @@ Output is plain text on standard output; errors go to standard error.
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Success |
-| 1 | A failure you can act on: provider unreachable or credentials rejected (Proxmox VE: API token; Contabo: client ID, client secret, API user and API password), configuration, server or operation not found, unknown option kind for the provider, nothing configured, a provider failed in `servers`; for a power command also an unsupported action, a server already in the state, a missing or refused confirmation, a request the provider rejected, and an operation that ended `failed` or `unknown`; for `server define` a description that is not valid; for `server provision` an invalid or unsupported description, an existing server name or an unfinished earlier request, a missing confirmation, a rejected or failed creation; for `server remove` an unsupported removal, a running or already removed server, a wrong typed identifier, a missing or refused confirmation, a rejected or failed removal |
+| 1 | A failure you can act on: provider unreachable or credentials rejected (Proxmox VE: API token; Contabo: client ID, client secret, API user and API password), configuration, server or operation not found, unknown option kind for the provider, nothing configured, a provider failed in `servers`; for a power command also an unsupported action, a server already in the state, a missing or refused confirmation, a request the provider rejected, and an operation that ended `failed` or `unknown`; for `server define` a description that is not valid; for `server provision` an invalid or unsupported description, an existing server name or an unfinished earlier request, a missing confirmation, a rejected or failed creation; for `server access|backup|restore` a missing access, a stopped server, an unknown or changed host key, a missing path, a destination that is not empty or has no room, a wrong or missing confirmation, or a copy that is not verified; for `server remove` an unsupported removal, a running or already removed server, a wrong typed identifier, a missing or refused confirmation, a rejected or failed removal |
 | 2 | Usage error |
 
 ## Checks
