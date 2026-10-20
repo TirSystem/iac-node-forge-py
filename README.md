@@ -453,9 +453,10 @@ $env:PVE_PROVISION_TEST_CONFIRM = 'create-server-iacnf-live'
 pytest -m integration -k provision -v
 ```
 
-## File transfer integration test (starts a throw-away SSH server)
+## File transfer integration tests (start a throw-away SSH server)
 
-The transfer contract suite (`tests/contract/test_transfer_contract.py`) runs
+Two opt-in tests use the container: the contract suite and a round trip through
+the real command line. The transfer contract suite (`tests/contract/test_transfer_contract.py`) runs
 every behaviour twice: against an in-process fake, which is part of the default
 suite, and against the OpenSSH adapters and a real `sshd`. The second variant is
 marked `integration`, so a plain `pytest` leaves it out.
@@ -490,6 +491,29 @@ PowerShell:
 ```powershell
 $env:IACNF_SSHD_TEST = '1'
 pytest -m integration tests/contract/test_transfer_contract.py -v
+```
+
+The round trip (`tests/integration/test_transfer_live.py`) runs the real
+`server access`, `server backup` and `server restore` commands with the real
+OpenSSH adapters and local disk, against the mock Proxmox VE API and the
+container: an unknown host key stops the backup, the printed fingerprint
+accepts it, the copy equals the source, a changed remote tree is restored after
+a typed confirmation, and a changed host key is never accepted. It uses the same
+sandbox (throw-away key, temporary `known_hosts` and `ssh_config`) and the same
+variable. It takes about 15 seconds after the image is built.
+
+bash:
+
+```bash
+export IACNF_SSHD_TEST=1
+pytest -m integration tests/integration/test_transfer_live.py -v
+```
+
+PowerShell:
+
+```powershell
+$env:IACNF_SSHD_TEST = '1'
+pytest -m integration tests/integration/test_transfer_live.py -v
 ```
 
 The first run builds the image, which needs network access to pull `alpine`.
