@@ -7,6 +7,7 @@ import pytest
 from iac_node_forge.application.dto import Confirmation
 from iac_node_forge.application.errors import TransferFailedError
 from iac_node_forge.application.transfer_dto import TransferOutcome
+from iac_node_forge.domain.manifest import DifferenceKind
 from iac_node_forge.domain.transfer_report import TransferDirection
 from tests.unit.application.transfer_fakes import FakeRemoteHost
 from tests.unit.application.use_cases.transfer_setup import (
@@ -131,6 +132,29 @@ def test_a_confirmed_restore_replaces_verifies_and_saves_the_report(
     assert report.report_file is not None
     assert Path(report.report_file).parent == tmp_path / "reports"
     assert pushes(setup) == 1
+
+
+def test_a_file_added_on_the_server_is_left_in_place_and_reported(
+    local: list[str], tmp_path: Path
+) -> None:
+    setup = build()
+    setup.host.add_file("/srv/app/added.txt", b"keep me")
+
+    result = setup.restore.request_restore(
+        "Lab", "100", local, "/srv", str(tmp_path / "reports"), TYPED
+    )
+
+    assert result.outcome is TransferOutcome.COMPLETED
+    assert setup.host.content("/srv/app/added.txt") == b"keep me"
+    assert setup.host.content("/srv/app/a.txt") == b"new alpha"
+    report = result.report
+    assert report is not None
+    assert report.verified
+    assert [(d.path, d.kind) for d in report.differences] == [
+        ("app/added.txt", DifferenceKind.EXTRA)
+    ]
+    assert report.note is not None and "1 item(s)" in report.note
+    assert "left in place" in report.note
 
 
 def test_one_changed_byte_is_a_verification_failure(

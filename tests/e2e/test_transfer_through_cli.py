@@ -208,6 +208,24 @@ def test_a_completed_restore_is_verified_and_reported(lab: Lab) -> None:
     assert [o["path"] for o in report["overwritten"]] == ["/srv/app"]
 
 
+def test_a_file_added_on_the_server_is_left_in_place_and_reported(lab: Lab) -> None:
+    """A restore adds and overwrites, never deletes: extras are reported, not failed."""
+    lab.manage()
+    lab.host.add_file("/srv/app/added.txt", b"keep me")
+
+    result = lab.restore("--yes")
+
+    assert result.code == 0, result.err
+    assert "Copied and verified" in result.out
+    assert "app/added.txt (extra)" in result.out
+    assert "left in place" in result.out
+    assert lab.host.content("/srv/app/added.txt") == b"keep me"
+    [report_file] = lab.reports.glob("*.json")
+    report = json.loads(report_file.read_text("utf-8"))
+    assert report["verified"] is True
+    assert "left in place" in report["note"]
+
+
 @pytest.mark.parametrize("direction", ["backup", "restore"])
 def test_one_changed_byte_is_a_failure_and_never_reported_as_done(
     multi_session: MultiProviderSession, tmp_path: Path, direction: str

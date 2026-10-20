@@ -286,18 +286,18 @@ def test_a_backup_and_a_restore_round_trip_through_the_real_cli(live: Live) -> N
     assert remote_tree() == changed
     live.session.answers[:] = [SERVER, SERVER]
     restored = run(live.restore())
-    # ADR-0009: the restore copies over the folder and deletes nothing, and any
-    # extra file makes the verification fail. So the added file is reported as
-    # the one difference, and everything else is back as in the backup.
-    assert restored.code == 1, restored.err + restored.out
-    assert "verification failed" in restored.err
-    assert "app/added.txt (extra)" in restored.err + restored.out
-    assert "Copied and verified" not in restored.out
+    # A restore adds and overwrites and never deletes: the file added on the
+    # server stays, is reported, and is not a failure.
+    assert restored.code == 0, restored.err + restored.out
+    assert "Copied and verified" in restored.out
+    assert "app/added.txt (extra)" in restored.out
+    assert "left in place" in restored.out
     assert remote_tree() == {**before, "app/added.txt": ("file", b"added")}
     [report_file] = live.reports.glob("*.json")
     report = json.loads(report_file.read_text("utf-8"))
-    assert report["verified"] is False
+    assert report["verified"] is True
     assert [d["path"] for d in report["differences"]] == ["app/added.txt"]
+    assert "left in place" in report["note"]
     live.session.interactive = False
 
     # 7) a changed host key stops, and accepting the fingerprint does not override it

@@ -21,7 +21,7 @@ from iac_node_forge.application.transfer_dto import (
     TransferResult,
 )
 from iac_node_forge.domain.host_key import HostKey
-from iac_node_forge.domain.manifest import Manifest, ManifestDifference
+from iac_node_forge.domain.manifest import DifferenceKind, Manifest, ManifestDifference
 from iac_node_forge.domain.provider_configuration import ConfigurationId
 from iac_node_forge.domain.transfer_report import (
     MAX_NOTE_LENGTH,
@@ -128,17 +128,34 @@ class TransferRun:
         source: Manifest,
         copy: Manifest,
         skipped: list[SkippedEntry],
+        *,
+        keeps_existing: bool = False,
     ) -> TransferResult:
-        """Report a finished copy: COMPLETED only when the manifests are equal."""
+        """Report a finished copy: COMPLETED only when the manifests are equal.
+
+        With ``keeps_existing`` (a restore adds and overwrites, never deletes)
+        a path only in the copy is not a failure: it is listed, counted in the
+        note and left in place.
+        """
         differences = source.differences_in(copy)
-        report, unsaved = self._saved(
-            finished_at, copy, skipped, differences, note=None
+        blocking = tuple(d for d in differences if d.kind is not DifferenceKind.EXTRA)
+        if not keeps_existing:
+            blocking = differences
+        left = len(differences) - len(blocking)
+        note = (
+            f"{left} item(s) on the server are not in the restored data and were "
+            "left in place"
+            if left and not blocking
+            else None
         )
-        if not differences:
+        report, unsaved = self._saved(
+            finished_at, copy, skipped, differences, note=note, verified=not blocking
+        )
+        if not blocking:
             return TransferResult(
                 TransferOutcome.COMPLETED, unsaved, report, self.host_key
             )
-        reason = describe_differences(differences)
+        reason = describe_differences(blocking)
         return TransferResult(
             TransferOutcome.VERIFICATION_FAILED,
             f"{reason}; {unsaved}" if unsaved else reason,
@@ -155,7 +172,9 @@ class TransferRun:
     ) -> TransferResult:
         """Report a copy that stopped; the report says it is incomplete."""
         note = f"incomplete: {reason}"[:MAX_NOTE_LENGTH]
-        report, unsaved = self._saved(finished_at, copy, skipped, (), note=note)
+        report, unsaved = self._saved(
+            finished_at, copy, skipped, (), note=note, verified=False
+        )
         text = f"{reason}; {unsaved}" if unsaved else reason
         return TransferResult(
             TransferOutcome.TRANSFER_FAILED, text, report, self.host_key
@@ -168,6 +187,7 @@ class TransferRun:
         skipped: list[SkippedEntry],
         differences: tuple[ManifestDifference, ...],
         note: str | None,
+        verified: bool,
     ) -> tuple[TransferReport, str]:
         report = TransferReport(
             self.direction,
@@ -181,7 +201,7 @@ class TransferRun:
             tuple(skipped),
             self.overwritten,
             differences,
-            verified=note is None and not differences,
+            verified=verified,
             note=note,
         )
         try:
