@@ -160,7 +160,7 @@ class RestoreFiles:
                 self._written(access, destination, checked.names),
                 skipped,
             )
-        return run.compared(self._clock(), source, copy, skipped)
+        return run.compared(self._clock(), source, copy, skipped, keeps_existing=True)
 
     def _written(
         self, access: RemoteAccess, destination: str, names: tuple[str, ...]

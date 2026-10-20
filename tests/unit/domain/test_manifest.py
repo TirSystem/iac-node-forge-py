@@ -208,9 +208,16 @@ def test_a_report_with_a_negative_count_is_refused() -> None:
         report(byte_count=-1)
 
 
-def test_a_verified_report_has_no_differences() -> None:
-    with pytest.raises(InvalidTransferReportError):
-        report(differences=(ManifestDifference("a", DifferenceKind.CHANGED),))
+def test_a_verified_report_has_no_missing_or_changed_path() -> None:
+    for kind in (DifferenceKind.CHANGED, DifferenceKind.MISSING):
+        with pytest.raises(InvalidTransferReportError):
+            report(differences=(ManifestDifference("a", kind),))
+
+
+def test_a_verified_report_may_list_extra_paths_left_in_place() -> None:
+    kept = report(differences=(ManifestDifference("a", DifferenceKind.EXTRA),))
+
+    assert kept.verified
 
 
 def test_a_report_note_is_bounded() -> None:

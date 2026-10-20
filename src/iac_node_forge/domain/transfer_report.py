@@ -9,7 +9,7 @@ from iac_node_forge.domain.errors import (
     InvalidTransferReportError,
     NaiveTimestampError,
 )
-from iac_node_forge.domain.manifest import ManifestDifference
+from iac_node_forge.domain.manifest import DifferenceKind, ManifestDifference
 from iac_node_forge.domain.provider_configuration import ConfigurationId
 
 MAX_NOTE_LENGTH = 500
@@ -54,7 +54,10 @@ class SkippedEntry:
 class TransferReport:
     """What a transfer did and whether the copy equals its source.
 
-    ``verified`` is true only when the manifests were equal. The report holds
+    ``verified`` is true only when nothing is missing or changed; a restore adds
+    and overwrites and never deletes, so it may verify with EXTRA differences:
+    files that were already on the server and are not in the restored data. The
+    report holds
     identifiers, counts, paths and bounded text; it has no field that can hold a
     secret.
     """
@@ -83,7 +86,12 @@ class TransferReport:
             raise InvalidTransferReportError("TransferReport ends before it starts")
         if min(self.file_count, self.link_count, self.byte_count) < 0:
             raise InvalidTransferReportError("TransferReport counts are negative")
-        if self.verified and self.differences:
-            raise InvalidTransferReportError("a verified report has no differences")
+        if self.verified and any(
+            difference.kind is not DifferenceKind.EXTRA
+            for difference in self.differences
+        ):
+            raise InvalidTransferReportError(
+                "a verified report has no missing or changed path"
+            )
         if self.note is not None and len(self.note) > MAX_NOTE_LENGTH:
             raise InvalidTransferReportError("TransferReport.note is too long")
