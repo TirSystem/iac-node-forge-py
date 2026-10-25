@@ -521,3 +521,26 @@ def test_an_operation_that_never_ends_is_unknown_and_the_intent_stays_pending() 
     assert setup.configurations.managed == ()
     assert retry.outcome is ProvisionOutcome.INTENT_PENDING
     assert len(setup.fake.requests) == 1
+
+
+@pytest.mark.parametrize("action", [PowerAction.BACKUP, PowerAction.RESTORE])
+def test_a_backup_or_restore_operation_is_not_a_provision_operation(
+    action: PowerAction,
+) -> None:
+    setup = build()
+    setup.operations.save(
+        Operation(
+            OperationId("op-backup"),
+            LAB_ID,
+            "100",
+            action,
+            OperationState.SUCCEEDED,
+            setup.clock(),
+            setup.clock(),
+        )
+    )
+
+    result = setup.use_case.complete_provisioning("op-backup")
+
+    assert result.outcome is ProvisionOutcome.INVALID
+    assert setup.configurations.managed == ()

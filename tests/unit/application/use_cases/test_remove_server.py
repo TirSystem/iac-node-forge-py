@@ -425,3 +425,26 @@ def test_an_unknown_configuration_raises() -> None:
 
 def _unreachable(*args: object, **kwargs: object) -> tuple[Server, ...]:
     raise ProviderUnreachableError("no route")
+
+
+@pytest.mark.parametrize("action", [PowerAction.BACKUP, PowerAction.RESTORE])
+def test_a_backup_or_restore_operation_is_not_a_removal_operation(
+    action: PowerAction,
+) -> None:
+    setup = build()
+    setup.operations.save(
+        Operation(
+            OperationId("op-backup"),
+            LAB_ID,
+            "100",
+            action,
+            OperationState.SUCCEEDED,
+            setup.clock.now,
+            setup.clock.now,
+        )
+    )
+
+    result = setup.use_case.complete_removal("op-backup")
+
+    assert result.outcome is RemovalOutcome.NOT_FOUND
+    assert "not a removal" in result.reason

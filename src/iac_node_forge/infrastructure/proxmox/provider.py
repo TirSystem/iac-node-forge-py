@@ -1,4 +1,4 @@
-"""The four ports (read, power, provision, removal) for Proxmox VE.
+"""The five ports (read, power, provision, removal, backup) for Proxmox VE.
 
 Authentication is by Proxmox VE API token only in this slice: the secret of
 the credentials is the full token string ``USER@REALM!TOKENID=SECRET`` and is
@@ -7,13 +7,17 @@ sent as ``Authorization: PVEAPIToken=<secret>``. Ticket login
 four power POSTs of ``_POWER_VERB`` (``status/start``, ``shutdown``, ``stop``
 and ``reboot`` of one VM or container), the two creations of ``_provision``
 (``POST /nodes/{node}/lxc`` and ``/qemu``) and the one deletion of
-``_removal`` (``DELETE /nodes/{node}/lxc|qemu/{vmid}``); no other write path
-exists here (ADR-0006, ADR-0007, ADR-0008). The power POSTs need the
-``VM.PowerMgmt`` permission; a creation and a deletion need ``VM.Allocate``.
+``_removal`` (``DELETE /nodes/{node}/lxc|qemu/{vmid}``) and the two backup
+requests of ``_backup`` (``POST /nodes/{node}/vzdump`` and the restore ``POST
+/nodes/{node}/lxc|qemu`` with ``force``); no other write path exists here
+(ADR-0006, ADR-0007, ADR-0008, ADR-0010). The power POSTs need the
+``VM.PowerMgmt`` permission; a creation and a deletion need ``VM.Allocate``; a
+dump and a restore need ``VM.Backup`` (see ``_backup``).
 """
 
 import re
 from collections.abc import Mapping
+from datetime import datetime
 from types import MappingProxyType
 from typing import Any
 from urllib.parse import quote
@@ -29,21 +33,25 @@ from iac_node_forge.application.errors import (
     ServerNotFoundError,
     UnknownOptionKindError,
 )
+from iac_node_forge.application.ports.server_backup_port import BackupBlock
 from iac_node_forge.application.ports.server_removal_port import RemovalBlock
 from iac_node_forge.domain.access_result import AccessResult
+from iac_node_forge.domain.backup import Backup
+from iac_node_forge.domain.backup_kind import BackupKind
 from iac_node_forge.domain.capability import Capability
 from iac_node_forge.domain.credentials import Credentials
 from iac_node_forge.domain.desired_configuration import DesiredConfiguration
-from iac_node_forge.domain.operation import Operation, OperationState
+from iac_node_forge.domain.operation import Operation, OperationId, OperationState
 from iac_node_forge.domain.power_action import PowerAction
 from iac_node_forge.domain.provider_configuration import ProviderConfiguration
 from iac_node_forge.domain.provider_kind import ProviderKind
 from iac_node_forge.domain.removal_kind import RemovalKind
+from iac_node_forge.domain.restore_effect import RestoreEffect
 from iac_node_forge.domain.server import Server
 from iac_node_forge.domain.server_option import ServerOption
 from iac_node_forge.domain.value_rule import ValueRule
 from iac_node_forge.infrastructure import _http, _power
-from iac_node_forge.infrastructure.proxmox import _provision, _removal
+from iac_node_forge.infrastructure.proxmox import _backup, _provision, _removal
 
 API_PREFIX = "/api2/json"
 OPTION_KIND_NODE = "node"
@@ -123,7 +131,8 @@ class ProxmoxProvider:
     def discover_capabilities(
         self, configuration: ProviderConfiguration
     ) -> frozenset[Capability]:
-        """Return the read, the four power, provision and remove capabilities."""
+        """Return the read, the four power, provision, remove, backup and restore
+        capabilities."""
         return frozenset(
             Capability(name)
             for name in (
@@ -328,13 +337,245 @@ class ProxmoxProvider:
             configuration, vmid, PowerAction.REMOVE, started_at, upid
         )
 
+    def backup_kind(self, configuration: ProviderConfiguration) -> BackupKind:
+        """A Proxmox VE backup is an archive file on a storage: always ARCHIVE."""
+        return BackupKind.ARCHIVE
+
+    def backup_storages(
+        self, configuration: ProviderConfiguration, server: Server
+    ) -> tuple[str, ...]:
+        """Return the storages of the guest's node whose content holds ``backup``."""
+        node, _ = self._locate(configuration, server.server_identifier)
+        return self._backup_storages(configuration, node)
+
+    def backup_block(
+        self,
+        configuration: ProviderConfiguration,
+        server: Server,
+        storage: str | None,
+    ) -> BackupBlock | None:
+        """Return NO_BACKUP_STORAGE or STORAGE_UNSUITABLE, else None; reads only."""
+        return _backup.backup_block(
+            self.backup_storages(configuration, server), storage
+        )
+
+    def restore_block(
+        self, configuration: ProviderConfiguration, server: Server, backup: Backup
+    ) -> BackupBlock | None:
+        """Return RUNNING for a running guest and MISMATCH for an archive of
+        another type of guest or another vmid; reads only."""
+        _, guest_type = self._locate(configuration, server.server_identifier)
+        return _backup.restore_block(server, guest_type, backup)
+
+    def backup_consequence(
+        self,
+        configuration: ProviderConfiguration,
+        server: Server,
+        storage: str | None,
+    ) -> str:
+        """State that an archive is written to the storage, deleting nothing."""
+        node, _ = self._locate(configuration, server.server_identifier)
+        chosen = self._chosen_storage(configuration, node, storage)
+        return _backup.backup_consequence(server, node, chosen)
+
+    def restore_effect(
+        self, configuration: ProviderConfiguration, server: Server, backup: Backup
+    ) -> RestoreEffect:
+        """State that the guest is overwritten by the archive, for good."""
+        node, _ = self._locate(configuration, server.server_identifier)
+        return RestoreEffect(_backup.restore_consequence(server, node, backup))
+
+    def request_backup(
+        self,
+        configuration: ProviderConfiguration,
+        server: Server,
+        storage: str | None,
+    ) -> Operation:
+        """Send one dump POST; the answer's task identifier is the reference.
+
+        The dump is made in ``snapshot`` mode with ``remove=0`` and notes that
+        hold the marker and the operation identifier. The node and the storage
+        are read first, so no write is sent for an unknown guest
+        (ServerNotFoundError) or for a storage that cannot hold a backup (a
+        FAILED operation). A rejection (401, 403 naming ``VM.Backup``, other
+        status) gives a FAILED operation; a timeout gives an UNKNOWN one.
+        """
+        started_at = self._clock()
+        vmid = server.server_identifier
+        operation_id = _power.new_operation_id()
+        try:
+            node, _ = self._locate(configuration, vmid)
+            request = _backup.dump_request(
+                node,
+                vmid,
+                self._chosen_storage(configuration, node, storage),
+                operation_id,
+            )
+        except ServerNotFoundError:
+            raise
+        except ProviderError as error:
+            return _power.failed_operation(
+                configuration,
+                vmid,
+                PowerAction.BACKUP,
+                started_at,
+                str(error),
+                operation_id,
+            )
+        return self._write_backup_request(
+            configuration,
+            request,
+            _backup.BACKUP_PERMISSION,
+            (vmid, PowerAction.BACKUP, started_at, operation_id),
+        )
+
+    def request_restore(
+        self, configuration: ProviderConfiguration, server: Server, backup: Backup
+    ) -> Operation:
+        """Send one restore POST over the guest with the same vmid, with ``force``.
+
+        The answer's task identifier is the reference. Nothing is sent, and the
+        operation is FAILED with the reason, for a running guest or an archive of
+        another guest. A rejection (401, 403 naming ``VM.Backup``) gives a FAILED
+        operation; a timeout gives an UNKNOWN one, because the guest may already
+        be replaced.
+        """
+        started_at = self._clock()
+        vmid = server.server_identifier
+        operation_id = _power.new_operation_id()
+        try:
+            node, guest_type = self._locate(configuration, vmid)
+            block = _backup.restore_block(server, guest_type, backup)
+            if block is not None:
+                raise ProviderError(f"the restore was not sent: {block.value}")
+            request = _backup.restore_request(node, guest_type, vmid, backup.backup_id)
+        except ServerNotFoundError:
+            raise
+        except ProviderError as error:
+            return _power.failed_operation(
+                configuration,
+                vmid,
+                PowerAction.RESTORE,
+                started_at,
+                str(error),
+                operation_id,
+            )
+        return self._write_backup_request(
+            configuration,
+            request,
+            _backup.RESTORE_PERMISSION,
+            (vmid, PowerAction.RESTORE, started_at, operation_id),
+        )
+
+    def list_backups(
+        self, configuration: ProviderConfiguration, server: Server
+    ) -> tuple[Backup, ...]:
+        """Return the archives of the guest on the node's backup storages, oldest
+        first; one is marked ``made_by_client`` when its notes hold the marker."""
+        vmid = server.server_identifier
+        node, _ = self._locate(configuration, vmid)
+        return self._archives(configuration, node, vmid)
+
+    def find_backup(
+        self, configuration: ProviderConfiguration, operation: Operation
+    ) -> Backup | None:
+        """Return the newest archive of the guest made at or after the start of the
+        operation whose notes carry the operation identifier, or None."""
+        vmid = operation.server_identifier
+        if vmid is None:
+            return None
+        node, _ = self._locate(configuration, vmid)
+        # ctime has whole seconds, so the start is compared at that resolution.
+        start = operation.started_at.replace(microsecond=0)
+        found = [
+            backup
+            for backup in self._archives(configuration, node, vmid)
+            if backup.created_at >= start
+            and _backup.carries_operation(backup.label, operation.operation_id)
+        ]
+        return max(found, key=lambda backup: backup.created_at, default=None)
+
+    def _write_backup_request(
+        self,
+        configuration: ProviderConfiguration,
+        request: _backup.GuestRequest,
+        permission: str,
+        about: tuple[str, PowerAction, datetime, OperationId],
+    ) -> Operation:
+        vmid, action, started_at, operation_id = about
+        try:
+            upid = self._post(
+                configuration.address, request.path, permission, request.form
+            )
+        except ProviderTimeoutError as error:
+            return _power.unknown_operation(
+                configuration,
+                vmid,
+                action,
+                started_at,
+                f"the request may have reached the provider: {error}",
+                operation_id,
+            )
+        except ProviderError as error:
+            return _power.failed_operation(
+                configuration, vmid, action, started_at, str(error), operation_id
+            )
+        return _power.running_operation(
+            configuration, vmid, action, started_at, upid, operation_id
+        )
+
+    def _backup_storages(
+        self, configuration: ProviderConfiguration, node: str
+    ) -> tuple[str, ...]:
+        listing = self._get_data(
+            configuration.address,
+            _backup.storages_path(node),
+            _backup.LISTING_PERMISSION,
+        )
+        return _backup.storage_names(_as_list(listing))
+
+    def _chosen_storage(
+        self, configuration: ProviderConfiguration, node: str, storage: str | None
+    ) -> str:
+        """Return the storage a dump goes to; raise ProviderError when none fits.
+
+        With no storage named, the only one that accepts backups is used.
+        """
+        storages = self._backup_storages(configuration, node)
+        block = _backup.backup_block(storages, storage)
+        if block is not None:
+            raise ProviderError(f"the backup was not sent: {block.value}")
+        if storage is not None:
+            return storage
+        if len(storages) != 1:
+            raise ProviderError("the backup was not sent: several storages, none named")
+        return storages[0]
+
+    def _archives(
+        self, configuration: ProviderConfiguration, node: str, vmid: str
+    ) -> tuple[Backup, ...]:
+        found: list[Backup] = []
+        for storage in self._backup_storages(configuration, node):
+            listing = self._get_data(
+                configuration.address,
+                _backup.content_path(node, storage, vmid),
+                _backup.LISTING_PERMISSION,
+            )
+            found.extend(
+                backup
+                for item in _as_list(listing)
+                if isinstance(item, Mapping)
+                and (backup := _backup.to_backup(item, vmid, storage)) is not None
+            )
+        return tuple(sorted(found, key=lambda b: (b.created_at, b.backup_id)))
+
     def operation_state(
         self, configuration: ProviderConfiguration, operation: Operation
     ) -> Operation:
         """Read the task status once: running, OK, or another exit status.
 
-        The same reading serves a power action, a provision and a removal: all
-        are tasks.
+        The same reading serves a power action, a provision, a removal, a backup
+        and a restore: all are tasks.
         """
         if operation.has_ended:
             return operation
@@ -432,11 +673,19 @@ class ProxmoxProvider:
                     )
         return tuple(options)
 
-    def _get_data(self, address: str, path: str) -> _Json:
-        return self._get(address, path, self._credentials)
+    def _get_data(
+        self, address: str, path: str, permission: str | None = None
+    ) -> _Json:
+        return self._get(address, path, self._credentials, permission)
 
-    def _get(self, address: str, path: str, credentials: Credentials) -> _Json:
-        return self._send("GET", address, path, credentials)
+    def _get(
+        self,
+        address: str,
+        path: str,
+        credentials: Credentials,
+        permission: str | None = None,
+    ) -> _Json:
+        return self._send("GET", address, path, credentials, None, permission)
 
     def _post(
         self,

@@ -18,6 +18,8 @@ SHUTDOWN_SERVER = "shutdown_server"
 STOP_SERVER = "stop_server"
 RESTART_SERVER = "restart_server"
 REMOVE_SERVER = "remove_server"
+BACKUP_SERVER = "backup_server"
+RESTORE_SERVER = "restore_server"
 
 KNOWN_ACTIONS: tuple[str, ...] = (
     LIST_SERVERS,
@@ -29,6 +31,8 @@ KNOWN_ACTIONS: tuple[str, ...] = (
     STOP_SERVER,
     RESTART_SERVER,
     REMOVE_SERVER,
+    BACKUP_SERVER,
+    RESTORE_SERVER,
 )
 
 POWER_ACTION_CAPABILITY: Mapping[PowerAction, str] = MappingProxyType(
@@ -46,9 +50,11 @@ ACTION_CAPABILITY: Mapping[PowerAction, str] = MappingProxyType(
         **POWER_ACTION_CAPABILITY,
         PowerAction.PROVISION: PROVISION_SERVER,
         PowerAction.REMOVE: REMOVE_SERVER,
+        PowerAction.BACKUP: BACKUP_SERVER,
+        PowerAction.RESTORE: RESTORE_SERVER,
     }
 )
-"""The capability name of every action of an operation, PROVISION and REMOVE
-included."""
+"""The capability name of every action of an operation, PROVISION, REMOVE,
+BACKUP and RESTORE included (listing backups belongs to ``backup_server``)."""
 
 POWER_CAPABILITIES: frozenset[str] = frozenset(POWER_ACTION_CAPABILITY.values())

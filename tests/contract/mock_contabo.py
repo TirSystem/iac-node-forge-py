@@ -5,11 +5,19 @@ the read endpoints with ``page``/``size``/``_pagination``. It requires the
 issued bearer token and a UUID4 ``x-request-id``, can be told to fail, to
 expire the token, to be slow, and records every request so a test can prove
 that only GET, the token POST, the four power actions, the instance
-creation (``POST /v1/compute/instances``) and the cancellation
-(``POST /v1/compute/instances/{id}/cancel``) were used. Every other write
+creation (``POST /v1/compute/instances``), the cancellation
+(``POST /v1/compute/instances/{id}/cancel``), the snapshot creation
+(``POST .../{id}/snapshots``) and the snapshot rollback
+(``POST .../{id}/snapshots/{snapshotId}/rollback``) were used. Every other write
 answers 405 and is recorded. A cancellation answers with the instance id and
 its ``cancelDate``; the instance reads ``cancelled`` after the same number of
 reads as a power transition, and keeps its ``cancelDate``.
+
+Snapshots have no task and no status (B20). A new snapshot is answered at once
+but appears in the listing only after the same number of instance reads as a
+power transition (the instance keeps its status, or shows the interim one). A
+rollback is answered at once and, after the same number of reads, deletes every
+snapshot newer than the target (B18), unless told to keep them.
 """
 
 import json
@@ -19,7 +27,9 @@ import secrets
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import TracebackType
 from typing import Any
@@ -46,6 +56,14 @@ _ACTION_PATH = re.compile(
     INSTANCES_PATH + r"/(?P<id>\d+)/actions/(?P<action>start|shutdown|stop|restart)"
 )
 _CANCEL_PATH = re.compile(INSTANCES_PATH + r"/(?P<id>\d+)/cancel")
+_SNAPSHOTS_PATH = re.compile(INSTANCES_PATH + r"/(?P<id>\d+)/snapshots")
+_ROLLBACK_PATH = re.compile(
+    INSTANCES_PATH + r"/(?P<id>\d+)/snapshots/(?P<snapshot>[^/]+)/rollback"
+)
+SNAPSHOT_NAME = re.compile(r"[A-Za-z0-9 -]{1,30}")
+MAX_DESCRIPTION = 255
+FIRST_SNAPSHOT_TIME = datetime(2026, 10, 20, 10, 0, tzinfo=UTC)
+SNAPSHOT_LIFETIME = timedelta(days=30)
 CANCEL_DATE = "2026-11-18T00:00:00Z"
 _TARGET_AFTER = {
     "start": "running",
@@ -72,6 +90,8 @@ class MockTransition:
     target: str
     reads_left: int
     interim_status: str | None
+    # Runs when the target status is reached (not when it is ``error``).
+    on_done: Callable[[], None] | None = None
 
 
 @dataclass(slots=True)
@@ -107,6 +127,27 @@ class MockContaboState:
     cancel_reports_no_date: bool = False
     # The identifiers of the instances a cancellation was accepted for.
     cancelled: list[str] = field(default_factory=list)
+    # Answers every snapshot creation POST with this status.
+    snapshot_forced_status: int | None = None
+    # Answers every rollback POST with this status.
+    rollback_forced_status: int | None = None
+    # The snapshots of all instances; each has an "instanceId".
+    snapshots: list[dict[str, Any]] = field(default_factory=list)
+    # The identifiers of the snapshots made but not yet listed.
+    hidden_snapshots: set[str] = field(default_factory=set)
+    # The JSON body of every snapshot creation the mock accepted, in order.
+    snapshot_requests: list[dict[str, Any]] = field(default_factory=list)
+    # The (instance, snapshot) of every rollback the mock accepted, in order.
+    rolled_back: list[tuple[str, str]] = field(default_factory=list)
+    # The listing leaves out the creation dates of the snapshots.
+    snapshots_without_dates: bool = False
+    # The listing leaves out the auto-delete dates of the snapshots.
+    snapshots_without_auto_delete: bool = False
+    # The listing gives the newest snapshot first.
+    snapshots_newest_first: bool = False
+    # A rollback is accepted but never deletes the newer snapshots.
+    rollback_keeps_newer: bool = False
+    snapshot_count: int = 0
     # The creation is accepted (201) but the answer names no instance.
     create_answers_without_instance: bool = False
     # The JSON body of every creation the mock accepted, in order.
@@ -165,6 +206,14 @@ class _Handler(BaseHTTPRequestHandler):
         cancel = _CANCEL_PATH.fullmatch(parts.path)
         if cancel is not None:
             self._cancel_instance(cancel["id"], request_id, state)
+            return
+        snapshots = _SNAPSHOTS_PATH.fullmatch(parts.path)
+        if snapshots is not None:
+            self._create_snapshot(snapshots["id"], request_id, state)
+            return
+        rollback = _ROLLBACK_PATH.fullmatch(parts.path)
+        if rollback is not None:
+            self._roll_back(rollback["id"], rollback["snapshot"], request_id, state)
             return
         if parts.path != TOKEN_PATH:
             self._reply(METHOD_NOT_ALLOWED, {})
@@ -241,6 +290,71 @@ class _Handler(BaseHTTPRequestHandler):
             self._reply(UNSUPPORTED_MEDIA_TYPE, {"message": "json expected"})
         else:
             self._apply_cancel(identifier, state)
+
+    def _write_allowed(
+        self,
+        forced: int | None,
+        request_id: str | None,
+        state: MockContaboState,
+    ) -> bool:
+        """Answer a refused snapshot write and return False; True when accepted."""
+        if state.delay_seconds:
+            time.sleep(state.delay_seconds)
+        if forced is not None:
+            self._reply(forced, {})
+        elif state.forced_status is not None:
+            self._reply(state.forced_status, {})
+        elif not self._bearer_accepted(state):
+            self._reply(UNAUTHORIZED, {"message": "invalid token"})
+        elif not _is_uuid4(request_id):
+            self._reply(BAD_REQUEST, {"message": "x-request-id must be a UUID4"})
+        elif self.headers.get("Content-Type", "") != "application/json":
+            self._reply(UNSUPPORTED_MEDIA_TYPE, {"message": "json expected"})
+        else:
+            return True
+        return False
+
+    def _create_snapshot(
+        self, identifier: str, request_id: str | None, state: MockContaboState
+    ) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length)
+        if not self._write_allowed(state.snapshot_forced_status, request_id, state):
+            return
+        instance = _find_instance(state, identifier)
+        body = _json_object(raw)
+        if instance is None:
+            self._reply(NOT_FOUND, {"message": "instance not found"})
+        elif not _snapshot_body_is_valid(body):
+            self._reply(BAD_REQUEST, {"message": "invalid snapshot request"})
+        else:
+            assert body is not None
+            state.snapshot_requests.append(body)
+            snapshot = _new_snapshot(instance, body, state)
+            self._reply(201, {"data": [dict(snapshot)], "_links": {"self": self.path}})
+
+    def _roll_back(
+        self,
+        identifier: str,
+        snapshot_id: str,
+        request_id: str | None,
+        state: MockContaboState,
+    ) -> None:
+        if not self._write_allowed(state.rollback_forced_status, request_id, state):
+            return
+        instance = _find_instance(state, identifier)
+        target = _find_snapshot(state, identifier, snapshot_id)
+        if instance is None or target is None:
+            self._reply(NOT_FOUND, {"message": "snapshot not found"})
+            return
+        state.rolled_back.append((identifier, snapshot_id))
+        state.transitions[identifier] = MockTransition(
+            "error" if state.transition_fails else str(instance["status"]),
+            state.transition_reads,
+            state.interim_status,
+            lambda: _delete_newer(state, identifier, target),
+        )
+        self._reply(200, {"data": [dict(target)], "_links": {"self": self.path}})
 
     def _apply_cancel(self, identifier: str, state: MockContaboState) -> None:
         found = [i for i in state.instances if str(i.get("instanceId")) == identifier]
@@ -367,7 +481,10 @@ class _Handler(BaseHTTPRequestHandler):
     def _route(
         self, path: str, query: dict[str, list[str]], state: MockContaboState
     ) -> None:
-        if path == INSTANCES_PATH:
+        snapshots = _SNAPSHOTS_PATH.fullmatch(path)
+        if snapshots is not None:
+            self._reply_snapshots(snapshots["id"], query, state)
+        elif path == INSTANCES_PATH:
             self._reply_page(state.instances, query, state)
         elif path == DATA_CENTERS_PATH:
             self._reply_page(state.data_centers, query, state)
@@ -396,6 +513,22 @@ class _Handler(BaseHTTPRequestHandler):
             self._reply(200, {"data": found, "_links": {"self": self.path}})
         else:
             self._reply(NOT_FOUND, {"message": "instance not found"})
+
+    def _reply_snapshots(
+        self, identifier: str, query: dict[str, list[str]], state: MockContaboState
+    ) -> None:
+        if _find_instance(state, identifier) is None:
+            self._reply(NOT_FOUND, {"message": "instance not found"})
+            return
+        listed = [
+            _listed_view(item, state)
+            for item in state.snapshots
+            if str(item["instanceId"]) == identifier
+            and item["snapshotId"] not in state.hidden_snapshots
+        ]
+        if state.snapshots_newest_first:
+            listed.reverse()
+        self._reply_page(listed, query, state)
 
     def _reply_page(
         self,
@@ -462,6 +595,103 @@ def _advance_transition(instance: dict[str, Any], state: MockContaboState) -> No
         return
     instance["status"] = transition.target
     del state.transitions[identifier]
+    if transition.on_done is not None and transition.target != "error":
+        transition.on_done()
+
+
+def _find_instance(state: MockContaboState, identifier: str) -> dict[str, Any] | None:
+    for item in state.instances:
+        if str(item.get("instanceId")) == identifier:
+            return item
+    return None
+
+
+def _find_snapshot(
+    state: MockContaboState, identifier: str, snapshot_id: str
+) -> dict[str, Any] | None:
+    for item in state.snapshots:
+        if (
+            str(item["instanceId"]) == identifier
+            and item["snapshotId"] == snapshot_id
+            and snapshot_id not in state.hidden_snapshots
+        ):
+            return item
+    return None
+
+
+def _json_object(raw: bytes) -> dict[str, Any] | None:
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def _snapshot_body_is_valid(body: dict[str, Any] | None) -> bool:
+    """Whether the body holds a name and a description within the limits (B17)."""
+    if body is None:
+        return False
+    name, text = body.get("name"), body.get("description")
+    return (
+        isinstance(name, str)
+        and SNAPSHOT_NAME.fullmatch(name) is not None
+        and isinstance(text, str)
+        and 1 <= len(text) <= MAX_DESCRIPTION
+    )
+
+
+def _new_snapshot(
+    instance: dict[str, Any], body: dict[str, Any], state: MockContaboState
+) -> dict[str, Any]:
+    """Add a snapshot that is listed once the instance has settled."""
+    state.snapshot_count += 1
+    created = FIRST_SNAPSHOT_TIME + timedelta(hours=state.snapshot_count)
+    snapshot_id = f"5d2c0000-0000-4000-8000-{state.snapshot_count:012d}"
+    snapshot: dict[str, Any] = {
+        "snapshotId": snapshot_id,
+        "name": body["name"],
+        "description": body["description"],
+        "instanceId": instance["instanceId"],
+        "createdDate": _iso(created),
+        "autoDeleteDate": _iso(created + SNAPSHOT_LIFETIME),
+    }
+    state.snapshots.append(snapshot)
+    state.hidden_snapshots.add(snapshot_id)
+    identifier = str(instance["instanceId"])
+    state.transitions[identifier] = MockTransition(
+        "error" if state.transition_fails else str(instance["status"]),
+        state.transition_reads,
+        state.interim_status,
+        lambda: state.hidden_snapshots.discard(snapshot_id),
+    )
+    return snapshot
+
+
+def _delete_newer(
+    state: MockContaboState, identifier: str, target: dict[str, Any]
+) -> None:
+    """A rollback deletes every snapshot of the instance newer than the target."""
+    if state.rollback_keeps_newer:
+        return
+    state.snapshots = [
+        item
+        for item in state.snapshots
+        if str(item["instanceId"]) != identifier
+        or item["createdDate"] <= target["createdDate"]
+    ]
+
+
+def _listed_view(item: dict[str, Any], state: MockContaboState) -> dict[str, Any]:
+    view = dict(item)
+    if state.snapshots_without_dates:
+        del view["createdDate"]
+    if state.snapshots_without_auto_delete or state.snapshots_without_dates:
+        del view["autoDeleteDate"]
+    return view
+
+
+def _iso(moment: datetime) -> str:
+    return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _is_uuid4(text: str | None) -> bool:

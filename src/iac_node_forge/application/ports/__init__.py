@@ -1,5 +1,6 @@
 """Ports: the interfaces the application defines for things outside it."""
 
+from iac_node_forge.application.ports.backup_store import BackupStore
 from iac_node_forge.application.ports.configuration_store import ConfigurationStore
 from iac_node_forge.application.ports.credential_prompt import CredentialPrompt
 from iac_node_forge.application.ports.credential_store import CredentialStore
@@ -19,6 +20,10 @@ from iac_node_forge.application.ports.provision_intent_store import (
 )
 from iac_node_forge.application.ports.remote_read_port import RemoteReadPort
 from iac_node_forge.application.ports.server_access_store import ServerAccessStore
+from iac_node_forge.application.ports.server_backup_port import (
+    BackupBlock,
+    ServerBackupPort,
+)
 from iac_node_forge.application.ports.server_power_port import ServerPowerPort
 from iac_node_forge.application.ports.server_provision_port import (
     ServerProvisionPort,
@@ -29,6 +34,8 @@ from iac_node_forge.application.ports.server_removal_port import (
 )
 
 __all__ = [
+    "BackupBlock",
+    "BackupStore",
     "ConfigurationStore",
     "CredentialPrompt",
     "CredentialStore",
@@ -43,6 +50,7 @@ __all__ = [
     "RemovalBlock",
     "RemoteReadPort",
     "ServerAccessStore",
+    "ServerBackupPort",
     "ServerPowerPort",
     "ServerProvisionPort",
     "ServerRemovalPort",

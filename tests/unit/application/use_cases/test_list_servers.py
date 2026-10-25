@@ -14,6 +14,7 @@ from iac_node_forge.application.use_cases import ListServers
 from iac_node_forge.domain.provider_configuration import ProviderConfiguration
 from tests.unit.application.fakes import (
     FailingProvider,
+    FakeBackupProvider,
     FakeConfigurationStore,
     FakePowerProvider,
     FakeProvider,
@@ -117,6 +118,11 @@ def test_list_servers_reports_unobtainable_credentials_as_a_failure() -> None:
         def removal_for(
             self, configuration: ProviderConfiguration
         ) -> FakeRemovalProvider:
+            raise CredentialNotFoundError("gone")
+
+        def backup_for(
+            self, configuration: ProviderConfiguration
+        ) -> FakeBackupProvider:
             raise CredentialNotFoundError("gone")
 
     store = FakeConfigurationStore()

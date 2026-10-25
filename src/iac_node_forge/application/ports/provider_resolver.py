@@ -3,6 +3,7 @@
 from typing import Protocol, runtime_checkable
 
 from iac_node_forge.application.ports.provider_port import ProviderPort
+from iac_node_forge.application.ports.server_backup_port import ServerBackupPort
 from iac_node_forge.application.ports.server_power_port import ServerPowerPort
 from iac_node_forge.application.ports.server_provision_port import (
     ServerProvisionPort,
@@ -50,6 +51,14 @@ class ProviderResolver(Protocol):
         """Return the removal port for a configuration.
 
         Raises UnsupportedProviderError when its adapter cannot remove servers
+        and a CredentialStoreError when its credentials cannot be obtained.
+        """
+        ...
+
+    def backup_for(self, configuration: ProviderConfiguration) -> ServerBackupPort:
+        """Return the backup port for a configuration.
+
+        Raises UnsupportedProviderError when its adapter cannot back up servers
         and a CredentialStoreError when its credentials cannot be obtained.
         """
         ...

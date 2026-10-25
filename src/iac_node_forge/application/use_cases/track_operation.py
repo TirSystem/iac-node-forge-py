@@ -14,6 +14,7 @@ from iac_node_forge.application.ports import (
     ConfigurationStore,
     OperationStore,
     ProviderResolver,
+    ServerBackupPort,
     ServerPowerPort,
     ServerProvisionPort,
     ServerRemovalPort,
@@ -111,12 +112,14 @@ class TrackOperation:
 
     def _reader(
         self, target: ProviderConfiguration, operation: Operation
-    ) -> ServerPowerPort | ServerProvisionPort | ServerRemovalPort:
+    ) -> ServerPowerPort | ServerProvisionPort | ServerRemovalPort | ServerBackupPort:
         """The port that reads the operation, by its action."""
         if operation.action is PowerAction.PROVISION:
             return self._providers.provision_for(target)
         if operation.action is PowerAction.REMOVE:
             return self._providers.removal_for(target)
+        if operation.action in (PowerAction.BACKUP, PowerAction.RESTORE):
+            return self._providers.backup_for(target)
         return self._providers.power_for(target)
 
     def _unknown(self, operation: Operation, reason: str) -> Operation:

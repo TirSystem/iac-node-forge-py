@@ -12,6 +12,7 @@ from iac_node_forge.application.ports import (
     CredentialPrompt,
     CredentialStore,
     ProviderPort,
+    ServerBackupPort,
     ServerPowerPort,
     ServerProvisionPort,
     ServerRemovalPort,
@@ -129,6 +130,19 @@ class CliProviderResolver:
         if not isinstance(provider, ServerRemovalPort):
             raise UnsupportedProviderError(
                 f"no removal for {configuration.provider_kind.value} "
+                "in this version of the client"
+            )
+        return provider
+
+    def backup_for(self, configuration: ProviderConfiguration) -> ServerBackupPort:
+        """Return the backup port of the configuration's adapter.
+
+        One adapter object serves all five ports, as for ``power_for``.
+        """
+        provider = self.provider_for(configuration)
+        if not isinstance(provider, ServerBackupPort):
+            raise UnsupportedProviderError(
+                f"no backup or restore for {configuration.provider_kind.value} "
                 "in this version of the client"
             )
         return provider

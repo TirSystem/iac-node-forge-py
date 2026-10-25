@@ -265,3 +265,17 @@ def test_consequence_at_the_bound_is_accepted_and_beyond_it_is_rejected() -> Non
 def test_blank_consequence_is_rejected() -> None:
     with pytest.raises(EmptyValueError):
         make(consequence="  ")
+
+
+@pytest.mark.parametrize("action", [PowerAction.BACKUP, PowerAction.RESTORE])
+def test_a_backup_or_restore_operation_keeps_its_consequence_and_its_place(
+    action: PowerAction,
+) -> None:
+    text = "Guest 101 is overwritten by the backup; this cannot be undone."
+
+    operation = make(
+        action=action, consequence=text, provider_reference="UPID:pve2:0001"
+    )
+
+    assert operation.consequence == text
+    assert operation.provider_reference == "UPID:pve2:0001"

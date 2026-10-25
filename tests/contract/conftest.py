@@ -1,21 +1,27 @@
 """Fixtures: the mock provider APIs with data, and the provider variants."""
 
+import re
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NoReturn
 
 import pytest
 
 from iac_node_forge.application.capabilities import (
+    BACKUP_SERVER,
     POWER_CAPABILITIES,
     PROVISION_SERVER,
     REMOVE_SERVER,
+    RESTORE_SERVER,
 )
 from iac_node_forge.application.errors import (
     ProviderAuthenticationError,
     ProviderTimeoutError,
 )
-from iac_node_forge.application.ports import RemovalBlock
+from iac_node_forge.application.ports import BackupBlock, RemovalBlock
+from iac_node_forge.domain.backup import Backup
+from iac_node_forge.domain.backup_kind import BackupKind
 from iac_node_forge.domain.capability import Capability
 from iac_node_forge.domain.credentials import Credentials
 from iac_node_forge.domain.desired_configuration import DesiredConfiguration
@@ -34,6 +40,7 @@ from iac_node_forge.infrastructure.proxmox import ProxmoxProvider
 from tests.contract.mock_contabo import MockContaboServer
 from tests.contract.mock_proxmox import MockProxmoxServer
 from tests.contract.provider_under_test import (
+    BackupCase,
     ProviderUnderTest,
     ProvisionCase,
     RemovalCase,
@@ -42,6 +49,7 @@ from tests.contract.transfer_under_test import FakeWorld, SshdWorld, TransferWor
 from tests.integration import sshd_server
 from tests.integration.sshd_server import SshdServer
 from tests.unit.application.fakes import (
+    FakeBackupProvider,
     FakePowerProvider,
     FakeProvider,
     FakeProvisionProvider,
@@ -99,11 +107,13 @@ READ_ONLY_CAPABILITIES = frozenset(
 POWER_ONLY_CAPABILITIES = frozenset(Capability(name) for name in POWER_CAPABILITIES)
 PROVISION_CAPABILITY = frozenset({Capability(PROVISION_SERVER)})
 REMOVAL_CAPABILITY = frozenset({Capability(REMOVE_SERVER)})
+BACKUP_CAPABILITIES = frozenset({Capability(BACKUP_SERVER), Capability(RESTORE_SERVER)})
 ALL_CAPABILITIES = (
     READ_ONLY_CAPABILITIES
     | POWER_ONLY_CAPABILITIES
     | PROVISION_CAPABILITY
     | REMOVAL_CAPABILITY
+    | BACKUP_CAPABILITIES
 )
 PROXMOX_VERBS = {
     PowerAction.START: "start",
@@ -116,6 +126,13 @@ CONTABO_CREATE_WRITE = ("POST", "/v1/compute/instances")
 CONTABO_CANCEL_WRITES = frozenset(
     ("POST", f"/v1/compute/instances/{server}/cancel") for server in ("100", "101")
 )
+CONTABO_SNAPSHOT_WRITES = frozenset(
+    ("POST", f"/v1/compute/instances/{server}/snapshots") for server in ("100", "101")
+)
+CONTABO_ROLLBACK_WRITE = (
+    "POST",
+    "/v1/compute/instances/101/snapshots/{snapshot}/rollback",
+)
 CONTABO_ALLOWED_WRITES = (
     frozenset(
         ("POST", f"/v1/compute/instances/{server}/actions/{verb}")
@@ -124,6 +141,7 @@ CONTABO_ALLOWED_WRITES = (
     )
     | {CONTABO_CREATE_WRITE}
     | CONTABO_CANCEL_WRITES
+    | CONTABO_SNAPSHOT_WRITES
 )
 PROXMOX_CREATE_WRITES = frozenset(
     ("POST", f"/api2/json/nodes/{node}/{kind}")
@@ -134,6 +152,9 @@ PROXMOX_DELETE_WRITES = frozenset(
     ("DELETE", f"/api2/json/nodes/{node}/{kind}/{server}")
     for server, (node, kind) in PROXMOX_PLACES.items()
 )
+PROXMOX_DUMP_WRITES = frozenset(
+    ("POST", f"/api2/json/nodes/{node}/vzdump") for node in ("pve1", "pve2")
+)
 PROXMOX_ALLOWED_WRITES = (
     frozenset(
         ("POST", f"/api2/json/nodes/{node}/{kind}/{server}/status/{verb}")
@@ -142,6 +163,7 @@ PROXMOX_ALLOWED_WRITES = (
     )
     | PROXMOX_CREATE_WRITES
     | PROXMOX_DELETE_WRITES
+    | PROXMOX_DUMP_WRITES
 )
 
 
@@ -165,7 +187,7 @@ def mock_proxmox() -> Iterator[MockProxmoxServer]:
                 {"storage": "local", "content": "iso,vztmpl,backup"},
                 {"storage": "local-lvm", "content": "rootdir,images"},
             ],
-            "pve2": [{"storage": "local", "content": "iso,vztmpl"}],
+            "pve2": [{"storage": "local", "content": "iso,vztmpl,backup"}],
         }
         state.storage_content = {
             "pve1/local": [
@@ -563,6 +585,148 @@ def removal_case(request: pytest.FixtureRequest) -> RemovalCase:
     if request.param == "contabo":
         return _contabo_removal_case(request.getfixturevalue("mock_contabo"))
     return _fake_removal_case()
+
+
+_FOREIGN_VOLUME = "local:backup/vzdump-qemu-100-2026_10_20-10_00_00.vma"
+FOREIGN_ARCHIVE = Backup(
+    backup_id=_FOREIGN_VOLUME,
+    kind=BackupKind.ARCHIVE,
+    location=f"storage local, volume {_FOREIGN_VOLUME}",
+    created_at=datetime(2026, 10, 20, 10, 0, tzinfo=UTC),
+    guest_type="qemu",
+)
+FOREIGN_SNAPSHOT = Backup(
+    backup_id="not-a-snapshot-of-this-instance",
+    kind=BackupKind.SNAPSHOT,
+    location="snapshot other at Contabo",
+    created_at=datetime(2026, 10, 20, 10, 0, tzinfo=UTC),
+    label="other",
+)
+PROXMOX_BACKUP_WRITES = frozenset(
+    {
+        ("vzdump", "/api2/json/nodes/pve2/vzdump"),
+        ("restore", "/api2/json/nodes/pve2/lxc"),
+    }
+)
+_ROLLBACK_ID = re.compile(r"/snapshots/[^/]+/rollback")
+
+
+def _fake_backup_case() -> BackupCase:
+    fake = FakeBackupProvider(servers=EXPECTED_SERVERS)
+    return BackupCase(
+        name="fake",
+        provider=fake,
+        backup=fake,
+        configuration=configuration_for("fake.invalid"),
+        secret_values=(TOKEN, WRONG_TOKEN),
+        kind=BackupKind.ARCHIVE,
+        server_id="101",
+        blocked_id="100",
+        storage="local",
+        expected_storages=("local",),
+        unsuitable_storage="nowhere",
+        remove_storages=fake.remove_storages,
+        expected_no_storage_block=BackupBlock.NO_BACKUP_STORAGE,
+        prepare_blocked=lambda: None,
+        expected_restore_block=BackupBlock.RUNNING,
+        foreign_backup=FOREIGN_ARCHIVE,
+        reject_backup=lambda: fake.reject_with(
+            ProviderAuthenticationError("the fake provider answered 403")
+        ),
+        reject_restore=lambda: fake.reject_with(
+            ProviderAuthenticationError("the fake provider answered 403")
+        ),
+        rejection_hint=None,
+        fail_operations=fake.make_operations_fail,
+        lose_answers=fake.answer_unknown,
+        change_server=lambda: fake.change_server("101"),
+        state_is_restored=lambda: "101" not in fake.changed,
+        write_requests=lambda: [("REQUEST", f"{a}:{s}") for a, s in fake.requests],
+        allowed_write_requests=frozenset(
+            ("REQUEST", f"{action}:101") for action in ("backup", "restore")
+        ),
+    )
+
+
+def _proxmox_backup_case(mock: MockProxmoxServer) -> BackupCase:
+    provider = ProxmoxProvider(Credentials.single(TOKEN), timeout=2.0)
+    return BackupCase(
+        name="proxmox",
+        provider=provider,
+        backup=provider,
+        configuration=configuration_for(mock.address),
+        secret_values=(TOKEN, TOKEN.split("=", 1)[1]),
+        kind=BackupKind.ARCHIVE,
+        server_id="101",
+        blocked_id="100",
+        storage="local",
+        expected_storages=("local",),
+        unsuitable_storage="local-lvm",
+        remove_storages=lambda: mock.state.storages.update(
+            pve2=[{"storage": "local", "content": "iso,vztmpl"}]
+        ),
+        expected_no_storage_block=BackupBlock.NO_BACKUP_STORAGE,
+        prepare_blocked=lambda: None,
+        expected_restore_block=BackupBlock.RUNNING,
+        foreign_backup=FOREIGN_ARCHIVE,
+        reject_backup=lambda: setattr(mock.state, "dump_forced_status", 403),
+        reject_restore=lambda: setattr(mock.state, "restore_forced_status", 403),
+        rejection_hint="VM.Backup",
+        fail_operations=lambda: setattr(
+            mock.state, "task_exitstatus", "job errors: guest is locked"
+        ),
+        lose_answers=lambda: setattr(provider, "_post", _time_out),
+        change_server=lambda: mock.state.resources[1].update(name="changed"),
+        state_is_restored=lambda: mock.state.resources[1]["name"] == "db",
+        write_requests=lambda: mock.write_classes,
+        allowed_write_requests=PROXMOX_BACKUP_WRITES,
+    )
+
+
+def _contabo_backup_case(mock: MockContaboServer) -> BackupCase:
+    provider = ContaboProvider(
+        Credentials(CONTABO_VALUES), auth_url=mock.auth_url, timeout=2.0
+    )
+    return BackupCase(
+        name="contabo",
+        provider=provider,
+        backup=provider,
+        configuration=contabo_configuration_for(mock.address),
+        secret_values=tuple(CONTABO_VALUES.values()),
+        kind=BackupKind.SNAPSHOT,
+        server_id="101",
+        blocked_id="100",
+        storage=None,
+        expected_storages=(),
+        unsuitable_storage="local",
+        remove_storages=lambda: None,
+        expected_no_storage_block=None,
+        prepare_blocked=lambda: mock.state.instances[0].update(status="cancelled"),
+        expected_restore_block=BackupBlock.CANCELLED,
+        foreign_backup=FOREIGN_SNAPSHOT,
+        reject_backup=lambda: setattr(mock.state, "snapshot_forced_status", 403),
+        reject_restore=lambda: setattr(mock.state, "rollback_forced_status", 403),
+        rejection_hint=None,
+        fail_operations=lambda: setattr(mock.state, "transition_fails", True),
+        lose_answers=lambda: setattr(provider, "_authorised_post", _time_out),
+        change_server=lambda: None,
+        state_is_restored=lambda: [i for i, _ in mock.state.rolled_back] == ["101"],
+        write_requests=lambda: [
+            (r.method, _ROLLBACK_ID.sub("/snapshots/{snapshot}/rollback", r.path))
+            for r in mock.write_requests
+        ],
+        allowed_write_requests=CONTABO_SNAPSHOT_WRITES | {CONTABO_ROLLBACK_WRITE},
+    )
+
+
+@pytest.fixture(params=["fake", "proxmox", "contabo"])
+def backup_case(request: pytest.FixtureRequest) -> BackupCase:
+    """The same backup and restore in each variant; the mocks start on demand."""
+    if request.param == "proxmox":
+        return _proxmox_backup_case(request.getfixturevalue("mock_proxmox"))
+    if request.param == "contabo":
+        return _contabo_backup_case(request.getfixturevalue("mock_contabo"))
+    return _fake_backup_case()
 
 
 @pytest.fixture(scope="session")
