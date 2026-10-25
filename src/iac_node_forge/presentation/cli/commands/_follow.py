@@ -4,6 +4,12 @@ import argparse
 from dataclasses import dataclass
 from typing import TextIO
 
+from iac_node_forge.application.backup_dto import (
+    BackupOutcome,
+    BackupResult,
+    RestoreOutcome,
+    RestoreResult,
+)
 from iac_node_forge.application.dto import (
     OperationSummary,
     ProvisionOutcome,
@@ -25,6 +31,11 @@ from iac_node_forge.application.use_cases import (
 from iac_node_forge.domain.operation import OperationState
 from iac_node_forge.domain.power_action import PowerAction
 from iac_node_forge.presentation.cli import exit_codes
+from iac_node_forge.presentation.cli.commands._full_backup import (
+    build_back_up_server,
+    build_restore_server,
+    kind_note,
+)
 from iac_node_forge.presentation.cli.commands._provisioning import (
     build_provision_server,
 )
@@ -141,7 +152,8 @@ def report_end(
 def complete_operation(
     services: CliServices, resolver: CliProviderResolver, operation: OperationSummary
 ) -> Completion | None:
-    """Complete a provision or removal operation that has ended; None otherwise."""
+    """Complete an operation that has ended: a provision, a removal, a backup or
+    a restore; None for any other action."""
     if operation.state is OperationState.RUNNING:
         return None
     if operation.action is PowerAction.PROVISION:
@@ -153,6 +165,19 @@ def complete_operation(
     if operation.action is PowerAction.REMOVE:
         return _removed(
             build_remove_server(services, resolver).complete_removal(
+                operation.operation_id
+            ),
+            operation,
+        )
+    if operation.action is PowerAction.BACKUP:
+        return _backed_up(
+            build_back_up_server(services, resolver).complete_backup(
+                operation.operation_id
+            )
+        )
+    if operation.action is PowerAction.RESTORE:
+        return _restored(
+            build_restore_server(services, resolver).complete_restore(
                 operation.operation_id
             ),
             operation,
@@ -201,6 +226,45 @@ def _removed(result: RemovalResult, operation: OperationSummary) -> Completion:
             "record was changed."
         )
     return Completion(True, "Removal", tuple(lines))
+
+
+def _backed_up(result: BackupResult) -> Completion:
+    backup = result.backup
+    if result.outcome is not BackupOutcome.COMPLETED or backup is None:
+        return Completion(False, "Backup", (), result.reason, result.state_left)
+    lines = [
+        f"Kept at: {backup.location}",
+        f"Backup: {backup.backup_id} (alias {backup.alias}), {backup.kind.value}, "
+        f"made {backup.created_at.isoformat()}; recorded by this client.",
+    ]
+    if backup.auto_delete_at is not None:
+        lines.append(f"The provider deletes it on {backup.auto_delete_at.isoformat()}.")
+    note = kind_note(backup.kind)
+    if note is not None:
+        lines.append(note)
+    return Completion(True, "Backup", tuple(lines))
+
+
+def _restored(result: RestoreResult, operation: OperationSummary) -> Completion:
+    held = (
+        None
+        if result.state_after is None
+        else f"server {operation.server_identifier!r} is {result.state_after}"
+    )
+    if result.outcome is not RestoreOutcome.COMPLETED:
+        return Completion(False, "Restore", (), result.reason, held)
+    if held is None:
+        return Completion(
+            True, "Restore", (f"State after the restore: {result.reason}",)
+        )
+    return Completion(
+        True,
+        "Restore",
+        (
+            f"State after the restore: {held}.",
+            "Recorded: the state is kept in the detail of the operation.",
+        ),
+    )
 
 
 def _is_recorded(completion: Completion | None) -> bool:
