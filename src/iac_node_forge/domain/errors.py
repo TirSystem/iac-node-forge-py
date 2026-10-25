@@ -72,3 +72,8 @@ class InvalidManifestError(DomainError):
 
 class InvalidTransferReportError(DomainError):
     """A transfer report holds a negative count, a naive time or a long note."""
+
+
+class InvalidBackupError(DomainError):
+    """A backup or a backup record holds a negative size, an unknown guest type
+    or a naive time."""

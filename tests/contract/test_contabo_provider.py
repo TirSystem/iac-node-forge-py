@@ -390,16 +390,17 @@ def test_requests_hit_the_documented_paths(
 def test_adapter_source_has_no_write_request() -> None:
     source = inspect.getsource(contabo_module)
 
-    # The token request, and the power POST, the instance creation and the
-    # cancellation, which all go through ``_authorised_post`` (ADR-0006,
-    # ADR-0007, ADR-0008).
+    # The token request, and the power POST, the instance creation, the
+    # cancellation, the snapshot creation and the rollback, which all go through
+    # ``_authorised_post`` (ADR-0006, ADR-0007, ADR-0008, ADR-0010).
     assert source.count(".post(") == 3
     assert ".post(self._auth_url" in source
-    # Its definition, the power action, the creation and the cancellation.
-    assert source.count("_authorised_post(") == 4
+    # Its definition, the power action, the creation, the cancellation, the
+    # snapshot creation and the rollback.
+    assert source.count("_authorised_post(") == 6
     for write_call in (".put(", ".patch(", ".delete(", ".request("):
         assert write_call not in source
-    for other in ("snapshot", "reinstall", "rescue", "resize", "upgrade"):
+    for other in ("reinstall", "rescue", "resize", "upgrade"):
         assert other not in source
 
 

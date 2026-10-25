@@ -6,14 +6,17 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from iac_node_forge.application.capabilities import (
+    BACKUP_SERVER,
     INSPECT_SERVER,
     LIST_SERVER_OPTIONS,
     LIST_SERVERS,
     POWER_CAPABILITIES,
     PROVISION_SERVER,
     REMOVE_SERVER,
+    RESTORE_SERVER,
 )
 from iac_node_forge.application.errors import (
+    BackupUnsupportedError,
     CredentialEntryInvalidError,
     CredentialNotFoundError,
     CredentialStoreUnavailableError,
@@ -28,13 +31,17 @@ from iac_node_forge.application.errors import (
     UnsupportedProviderError,
 )
 from iac_node_forge.application.ports import (
+    BackupBlock,
     ProviderPort,
     RemovalBlock,
+    ServerBackupPort,
     ServerPowerPort,
     ServerProvisionPort,
     ServerRemovalPort,
 )
 from iac_node_forge.domain.access_result import AccessResult
+from iac_node_forge.domain.backup import Backup
+from iac_node_forge.domain.backup_kind import BackupKind
 from iac_node_forge.domain.capability import Capability
 from iac_node_forge.domain.credential_reference import CredentialReference
 from iac_node_forge.domain.credentials import Credentials
@@ -57,6 +64,7 @@ from iac_node_forge.domain.provision_intent import (
     ProvisionIntent,
 )
 from iac_node_forge.domain.removal_kind import RemovalKind
+from iac_node_forge.domain.restore_effect import RestoreEffect
 from iac_node_forge.domain.server import Server
 from iac_node_forge.domain.server_option import ServerOption
 from iac_node_forge.domain.value_rule import ValueRule
@@ -244,6 +252,8 @@ class FakeProviderResolver:
         removal: ServerRemovalPort | None = None,
         removal_by_configuration: dict[ConfigurationId, ServerRemovalPort]
         | None = None,
+        backup: ServerBackupPort | None = None,
+        backup_by_configuration: dict[ConfigurationId, ServerBackupPort] | None = None,
     ) -> None:
         self._default = default
         self._by_configuration = by_configuration or {}
@@ -253,10 +263,13 @@ class FakeProviderResolver:
         self._provision_by_configuration = provision_by_configuration or {}
         self._removal = removal
         self._removal_by_configuration = removal_by_configuration or {}
+        self._backup = backup
+        self._backup_by_configuration = backup_by_configuration or {}
         self.resolved: list[ConfigurationId] = []
         self.power_resolved: list[ConfigurationId] = []
         self.provision_resolved: list[ConfigurationId] = []
         self.removal_resolved: list[ConfigurationId] = []
+        self.backup_resolved: list[ConfigurationId] = []
 
     def provider_for(self, configuration: ProviderConfiguration) -> ProviderPort:
         self.resolved.append(configuration.configuration_id)
@@ -299,6 +312,18 @@ class FakeProviderResolver:
         if isinstance(provider, ServerRemovalPort):
             return provider
         raise UnsupportedProviderError("the fake provider cannot remove servers")
+
+    def backup_for(self, configuration: ProviderConfiguration) -> ServerBackupPort:
+        self.backup_resolved.append(configuration.configuration_id)
+        key = configuration.configuration_id
+        if key in self._backup_by_configuration:
+            return self._backup_by_configuration[key]
+        if self._backup is not None:
+            return self._backup
+        provider = self._by_configuration.get(key, self._default)
+        if isinstance(provider, ServerBackupPort):
+            return provider
+        raise UnsupportedProviderError("the fake provider cannot back up servers")
 
 
 class FakePowerProvider:
@@ -834,3 +859,273 @@ class FakeRemovalProvider(FakeProvider):
         if self._effective_date is None:
             return "cancelled, no date was reported"
         return f"cancelled, effective {self._effective_date}"
+
+
+class FakeBackupProvider(FakeProvider):
+    """Fake ProviderPort and ServerBackupPort with scripted behaviour.
+
+    ``kind`` ARCHIVE keeps its backups on ``storages``, blocks a restore over a
+    running server and leaves older backups alone; SNAPSHOT has no storage,
+    blocks a backup or restore of a cancelled server, and a restore deletes the
+    snapshots newer than the chosen one, as Contabo does. A request returns a
+    RUNNING operation; each ``operation_state`` call is one step, and the
+    operation ends after ``steps_to_finish`` steps. A backup that succeeded is
+    listed and found again unless ``hide_backups`` is set. ``change_server``
+    marks a server as changed after its backup and a restore clears the mark.
+    Every accepted request is in ``requests`` as (action word, server id);
+    ``supported`` False leaves both capabilities out, so a request is refused as
+    unsupported.
+    """
+
+    def __init__(
+        self,
+        servers: tuple[Server, ...] = (),
+        kind: BackupKind = BackupKind.ARCHIVE,
+        storages: tuple[str, ...] = ("local",),
+        supported: bool = True,
+        steps_to_finish: int = 2,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
+        names = (LIST_SERVERS, LIST_SERVER_OPTIONS, INSPECT_SERVER)
+        super().__init__(
+            capabilities=frozenset(
+                Capability(name)
+                for name in (
+                    *names,
+                    *((BACKUP_SERVER, RESTORE_SERVER) if supported else ()),
+                )
+            ),
+            servers=servers,
+        )
+        self._kind = kind
+        self._storages = storages if kind is BackupKind.ARCHIVE else ()
+        self._supported = supported
+        self._steps_to_finish = steps_to_finish
+        self._clock = clock
+        self._last_created = datetime.min.replace(tzinfo=UTC)
+        self._rejection: ProviderError | None = None
+        self._operations_fail = False
+        self._answers_unknown = False
+        self.hide_backups = False
+        self._steps: dict[OperationId, int] = {}
+        self._pending: dict[OperationId, Backup] = {}
+        self._backups: dict[str, list[Backup]] = {}
+        self.changed: set[str] = set()
+        self.requests: list[tuple[str, str]] = []
+        self.reads: list[str] = []
+
+    def reject_with(self, error: ProviderError | None) -> None:
+        """Make requests fail with ``error``; None makes them succeed again."""
+        self._rejection = error
+
+    def answer_unknown(self) -> None:
+        """Make a request end at once as UNKNOWN, as after a lost answer."""
+        self._answers_unknown = True
+
+    def make_operations_fail(self) -> None:
+        self._operations_fail = True
+
+    def remove_storages(self) -> None:
+        """Take every storage away, so no storage accepts backups."""
+        self._storages = ()
+
+    def change_server(self, server_identifier: str) -> None:
+        """Mark the server as changed since its last backup."""
+        self.changed.add(server_identifier)
+
+    def add_backup(self, server_identifier: str, backup: Backup) -> None:
+        """Make the provider hold a backup, as if it had been made elsewhere."""
+        self._backups.setdefault(server_identifier, []).append(backup)
+
+    def backup_kind(self, configuration: ProviderConfiguration) -> BackupKind:
+        self.reads.append("backup_kind")
+        return self._kind
+
+    def backup_storages(
+        self, configuration: ProviderConfiguration, server: Server
+    ) -> tuple[str, ...]:
+        self.reads.append("backup_storages")
+        return self._storages
+
+    def backup_block(
+        self,
+        configuration: ProviderConfiguration,
+        server: Server,
+        storage: str | None,
+    ) -> BackupBlock | None:
+        self.reads.append("backup_block")
+        if self._kind is BackupKind.SNAPSHOT:
+            if storage is not None:
+                return BackupBlock.STORAGE_UNSUITABLE
+            return BackupBlock.CANCELLED if server.state == "cancelled" else None
+        if storage is None:
+            return None if self._storages else BackupBlock.NO_BACKUP_STORAGE
+        return None if storage in self._storages else BackupBlock.STORAGE_UNSUITABLE
+
+    def restore_block(
+        self, configuration: ProviderConfiguration, server: Server, backup: Backup
+    ) -> BackupBlock | None:
+        self.reads.append("restore_block")
+        if self._kind is BackupKind.SNAPSHOT and server.state == "cancelled":
+            return BackupBlock.CANCELLED
+        if self._kind is BackupKind.ARCHIVE and server.state == "running":
+            return BackupBlock.RUNNING
+        held = self._backups.get(server.server_identifier, [])
+        if backup.backup_id not in {b.backup_id for b in held}:
+            return BackupBlock.MISMATCH
+        return None
+
+    def backup_consequence(
+        self,
+        configuration: ProviderConfiguration,
+        server: Server,
+        storage: str | None,
+    ) -> str:
+        self.reads.append("backup_consequence")
+        return (
+            f"This makes a {self._kind.value} of server {server.server_identifier}; "
+            "it changes nothing on the server."
+        )
+
+    def restore_effect(
+        self, configuration: ProviderConfiguration, server: Server, backup: Backup
+    ) -> RestoreEffect:
+        self.reads.append("restore_effect")
+        deleted = self._newer(server.server_identifier, backup)
+        text = (
+            f"This overwrites server {server.server_identifier} with the "
+            f"{self._kind.value} {backup.backup_id}; it cannot be undone."
+        )
+        return RestoreEffect(text, deleted)
+
+    def request_backup(
+        self,
+        configuration: ProviderConfiguration,
+        server: Server,
+        storage: str | None,
+    ) -> Operation:
+        self._require_support()
+        operation = self._operation(configuration, server, PowerAction.BACKUP)
+        refused = self._refusal(operation)
+        if refused is not None:
+            return refused
+        self.requests.append((PowerAction.BACKUP.value, server.server_identifier))
+        self._pending[operation.operation_id] = self._made(
+            operation, storage or (self._storages[0] if self._storages else None)
+        )
+        self._steps[operation.operation_id] = 0
+        return operation
+
+    def request_restore(
+        self, configuration: ProviderConfiguration, server: Server, backup: Backup
+    ) -> Operation:
+        self._require_support()
+        operation = replace(
+            self._operation(configuration, server, PowerAction.RESTORE),
+            provider_reference=backup.backup_id,
+        )
+        refused = self._refusal(operation)
+        if refused is not None:
+            return refused
+        self.requests.append((PowerAction.RESTORE.value, server.server_identifier))
+        self._steps[operation.operation_id] = 0
+        return operation
+
+    def list_backups(
+        self, configuration: ProviderConfiguration, server: Server
+    ) -> tuple[Backup, ...]:
+        self.reads.append("list_backups")
+        held = self._backups.get(server.server_identifier, [])
+        return tuple(sorted(held, key=lambda b: (b.created_at, b.backup_id)))
+
+    def find_backup(
+        self, configuration: ProviderConfiguration, operation: Operation
+    ) -> Backup | None:
+        self.reads.append("find_backup")
+        if self.hide_backups or operation.server_identifier is None:
+            return None
+        for backup in self._backups.get(operation.server_identifier, []):
+            if operation.operation_id in (backup.label or ""):
+                return backup
+        return None
+
+    def operation_state(
+        self, configuration: ProviderConfiguration, operation: Operation
+    ) -> Operation:
+        if operation.has_ended:
+            return operation
+        steps = self._steps.get(operation.operation_id, 0) + 1
+        self._steps[operation.operation_id] = steps
+        if steps < self._steps_to_finish:
+            return operation
+        finished_at = max(self._clock(), operation.started_at)
+        if self._operations_fail:
+            return operation.ended(
+                OperationState.FAILED, finished_at, "the fake operation failed"
+            )
+        self._apply(operation)
+        return operation.ended(OperationState.SUCCEEDED, finished_at, None)
+
+    def _apply(self, operation: Operation) -> None:
+        server = operation.server_identifier or ""
+        if operation.action is PowerAction.BACKUP:
+            made = self._pending.pop(operation.operation_id)
+            self._backups.setdefault(server, []).append(made)
+            return
+        held = self._backups.get(server, [])
+        target = next(b for b in held if b.backup_id == operation.provider_reference)
+        newer = {b.backup_id for b in self._newer(server, target)}
+        self._backups[server] = [b for b in held if b.backup_id not in newer]
+        self.changed.discard(server)
+
+    def _newer(self, server_identifier: str, backup: Backup) -> tuple[Backup, ...]:
+        if self._kind is not BackupKind.SNAPSHOT:
+            return ()
+        held = self._backups.get(server_identifier, [])
+        return tuple(b for b in held if b.created_at > backup.created_at)
+
+    def _made(self, operation: Operation, storage: str | None) -> Backup:
+        created = max(self._clock(), self._last_created + timedelta(seconds=1))
+        self._last_created = created
+        where = f"storage {storage}" if storage else "the provider"
+        number = len(self.requests)
+        return Backup(
+            backup_id=f"fake-{self._kind.value}-{number}",
+            kind=self._kind,
+            location=f"{where}, {self._kind.value} {number}",
+            created_at=created,
+            label=f"iac-node-forge {operation.operation_id}",
+            made_by_client=True,
+        )
+
+    def _operation(
+        self, configuration: ProviderConfiguration, server: Server, action: PowerAction
+    ) -> Operation:
+        return Operation(
+            operation_id=OperationId(uuid.uuid4().hex),
+            configuration_id=configuration.configuration_id,
+            server_identifier=server.server_identifier,
+            action=action,
+            state=OperationState.RUNNING,
+            started_at=self._clock(),
+        )
+
+    def _refusal(self, operation: Operation) -> Operation | None:
+        if self._rejection is not None:
+            return replace(operation, provider_reference=None).ended(
+                OperationState.FAILED, operation.started_at, str(self._rejection)
+            )
+        if self._answers_unknown:
+            self.requests.append(
+                (operation.action.value, operation.server_identifier or "")
+            )
+            return operation.ended(
+                OperationState.UNKNOWN,
+                operation.started_at,
+                "the request may have reached the provider",
+            )
+        return None
+
+    def _require_support(self) -> None:
+        if not self._supported:
+            raise BackupUnsupportedError("backup_server is not supported")

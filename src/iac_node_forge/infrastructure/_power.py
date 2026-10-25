@@ -38,16 +38,27 @@ def required_value(desired: DesiredConfiguration, name: str) -> str:
     return value
 
 
+def new_operation_id() -> OperationId:
+    """Return a fresh operation identifier.
+
+    A backup asks for it before its request, because the provider keeps it in
+    the marker that finds the backup again.
+    """
+    return OperationId(uuid.uuid4().hex)
+
+
 def running_operation(
     configuration: ProviderConfiguration,
     server_identifier: str | None,
     action: PowerAction,
     started_at: datetime,
     provider_reference: str | None,
+    operation_id: OperationId | None = None,
 ) -> Operation:
-    """Return a new operation in state RUNNING with a fresh identifier."""
+    """Return a new operation in state RUNNING, with ``operation_id`` or a fresh
+    identifier."""
     return Operation(
-        operation_id=OperationId(uuid.uuid4().hex),
+        operation_id=operation_id or new_operation_id(),
         configuration_id=configuration.configuration_id,
         server_identifier=server_identifier,
         action=action,
@@ -63,10 +74,11 @@ def failed_operation(
     action: PowerAction,
     started_at: datetime,
     reason: str,
+    operation_id: OperationId | None = None,
 ) -> Operation:
     """Return a new operation that ended at once in state FAILED with a reason."""
     return running_operation(
-        configuration, server_identifier, action, started_at, None
+        configuration, server_identifier, action, started_at, None, operation_id
     ).ended(OperationState.FAILED, started_at, bound_detail(reason) or _NO_REASON)
 
 
@@ -76,13 +88,14 @@ def unknown_operation(
     action: PowerAction,
     started_at: datetime,
     reason: str,
+    operation_id: OperationId | None = None,
 ) -> Operation:
     """Return a new operation that ended at once in state UNKNOWN with a reason.
 
     For a request whose answer was lost: it may have reached the provider.
     """
     return running_operation(
-        configuration, server_identifier, action, started_at, None
+        configuration, server_identifier, action, started_at, None, operation_id
     ).ended(OperationState.UNKNOWN, started_at, bound_detail(reason) or _NO_REASON)
 
 

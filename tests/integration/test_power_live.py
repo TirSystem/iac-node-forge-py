@@ -45,6 +45,7 @@ from iac_node_forge.application.errors import ProviderError
 from iac_node_forge.application.ports import (
     ConfigurationStore,
     ProviderPort,
+    ServerBackupPort,
     ServerPowerPort,
     ServerProvisionPort,
     ServerRemovalPort,
@@ -138,6 +139,9 @@ class _FixedResolver:
         return self._provider
 
     def removal_for(self, configuration: ProviderConfiguration) -> ServerRemovalPort:
+        return self._provider
+
+    def backup_for(self, configuration: ProviderConfiguration) -> ServerBackupPort:
         return self._provider
 
 

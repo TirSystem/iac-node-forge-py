@@ -20,6 +20,7 @@ from iac_node_forge.domain.power_action import PowerAction
 from iac_node_forge.domain.provider_configuration import ProviderConfiguration
 from iac_node_forge.domain.server import Server
 from tests.unit.application.fakes import (
+    FakeBackupProvider,
     FakeClock,
     FakeConfigurationStore,
     FakeOperationStore,
@@ -268,3 +269,34 @@ def test_follow_reads_a_remove_operation_through_the_removal_port() -> None:
     assert result.action is PowerAction.REMOVE
     assert resolver.removal_resolved == [LAB.configuration_id]
     assert resolver.power_resolved == []
+
+
+def test_follow_reads_a_backup_and_a_restore_through_the_backup_port() -> None:
+    clock = FakeClock()
+    backup = FakeBackupProvider(steps_to_finish=2, clock=clock)
+    store = FakeConfigurationStore()
+    store.save(LAB)
+    operations = FakeOperationStore()
+    stopped = Server("101", "db", "stopped", "", (), False)
+    resolver = FakeProviderResolver(FakeProvider(), backup=backup)
+    tracker = TrackOperation(
+        resolver, store, operations, clock=clock, sleep=clock.sleep
+    )
+    started = backup.request_backup(LAB, stopped, "local")
+    operations.save(started)
+
+    made = tracker.follow_operation(started.operation_id, 120, 2)
+    stored = backup.find_backup(LAB, operations.load(started.operation_id))
+    assert stored is not None
+    restoring = backup.request_restore(LAB, stopped, stored)
+    operations.save(restoring)
+    restored = tracker.follow_operation(restoring.operation_id, 120, 2)
+
+    assert (made.state, made.action) == (OperationState.SUCCEEDED, PowerAction.BACKUP)
+    assert (restored.state, restored.action) == (
+        OperationState.SUCCEEDED,
+        PowerAction.RESTORE,
+    )
+    assert resolver.backup_resolved == [LAB.configuration_id] * 2
+    assert resolver.power_resolved == []
+    assert resolver.removal_resolved == []

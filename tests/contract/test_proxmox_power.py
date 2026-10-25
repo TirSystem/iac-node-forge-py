@@ -293,20 +293,19 @@ def test_power_capabilities_are_declared(
     } <= names
 
 
-def test_adapter_source_names_no_write_method_beyond_power_creation_and_removal() -> (
-    None
-):
+def test_adapter_source_names_no_write_method_beyond_the_documented_ones() -> None:
     source = inspect.getsource(proxmox_module)
 
     assert source.count('"POST"') == 1
     assert source.count('"DELETE"') == 1
-    # The power request and the creation, the only callers of ``_post``.
-    assert source.count("self._post(") == 2
+    # The power request, the creation and the one place that sends a dump or a
+    # restore, the only callers of ``_post`` (ADR-0010).
+    assert source.count("self._post(") == 3
     # The removal, the only caller of ``_delete``.
     assert source.count("self._delete(") == 1
     assert source.count("_POWER_VERB[") == 1
     for write_call in (".put(", ".patch(", ".delete(", ".post("):
         assert write_call not in source
-    for other in ('"PUT"', '"PATCH"', "snapshot", "vzdump", "resize", "clone"):
+    for other in ('"PUT"', '"PATCH"', "resize", "clone", "migrate", "rollback"):
         assert other not in source
     assert len(proxmox_module._POWER_VERB) == 4

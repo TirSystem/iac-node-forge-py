@@ -1,4 +1,4 @@
-"""The four ports (read, power, provision, removal) for Contabo.
+"""The five ports (read, power, provision, removal, backup) for Contabo.
 
 The four credential values are exchanged for a bearer token with the OAuth2
 password grant. The token is kept only in memory, reused, and replaced once
@@ -6,8 +6,10 @@ after a 401. Every API call carries a fresh ``x-request-id``. Every API call
 is a GET except the four power POSTs of ``_POWER_ACTION_PATH``
 (``/actions/start``, ``shutdown``, ``stop`` and ``restart`` of one instance)
 the instance creation (``POST /v1/compute/instances``, ADR-0007) and the
-cancellation (``POST /v1/compute/instances/{id}/cancel``, ADR-0008); the only
-other request is the token POST (ADR-0006). Credentials: ADR-0005.
+cancellation (``POST /v1/compute/instances/{id}/cancel``, ADR-0008), the
+snapshot creation (``POST .../{id}/snapshots``) and the snapshot rollback
+(``POST .../{id}/snapshots/{snapshotId}/rollback``, ADR-0010); the only other
+request is the token POST (ADR-0006). Credentials: ADR-0005.
 """
 
 import uuid
@@ -31,8 +33,11 @@ from iac_node_forge.application.errors import (
     ServerNotFoundError,
     UnknownOptionKindError,
 )
+from iac_node_forge.application.ports.server_backup_port import BackupBlock
 from iac_node_forge.application.ports.server_removal_port import RemovalBlock
 from iac_node_forge.domain.access_result import AccessResult
+from iac_node_forge.domain.backup import Backup
+from iac_node_forge.domain.backup_kind import BackupKind
 from iac_node_forge.domain.capability import Capability
 from iac_node_forge.domain.credentials import Credentials
 from iac_node_forge.domain.desired_configuration import DesiredConfiguration
@@ -42,11 +47,12 @@ from iac_node_forge.domain.power_action import PowerAction
 from iac_node_forge.domain.provider_configuration import ProviderConfiguration
 from iac_node_forge.domain.provider_kind import ProviderKind
 from iac_node_forge.domain.removal_kind import RemovalKind
+from iac_node_forge.domain.restore_effect import RestoreEffect
 from iac_node_forge.domain.server import Server
 from iac_node_forge.domain.server_option import ServerOption
 from iac_node_forge.domain.value_rule import ValueRule
 from iac_node_forge.infrastructure import _http, _power
-from iac_node_forge.infrastructure.contabo import _provision, _removal
+from iac_node_forge.infrastructure.contabo import _backup, _provision, _removal
 
 DEFAULT_AUTH_URL = (
     "https://auth.contabo.com/auth/realms/contabo/protocol/openid-connect/token"
@@ -169,7 +175,8 @@ class ContaboProvider:
     def discover_capabilities(
         self, configuration: ProviderConfiguration
     ) -> frozenset[Capability]:
-        """Return the read, the four power, provision and remove capabilities."""
+        """Return the read, the four power, provision, remove, backup and restore
+        capabilities."""
         return frozenset(
             Capability(name)
             for name in (
@@ -395,10 +402,280 @@ class ContaboProvider:
         date = _removal.cancel_date(items[0]) if items else None
         return replace(running, detail=_removal.requested_detail(date))
 
+    def backup_kind(self, configuration: ProviderConfiguration) -> BackupKind:
+        """A Contabo backup is a snapshot held by the provider: always SNAPSHOT."""
+        return BackupKind.SNAPSHOT
+
+    def backup_storages(
+        self, configuration: ProviderConfiguration, server: Server
+    ) -> tuple[str, ...]:
+        """Contabo has no storage to choose: always empty."""
+        return ()
+
+    def backup_block(
+        self,
+        configuration: ProviderConfiguration,
+        server: Server,
+        storage: str | None,
+    ) -> BackupBlock | None:
+        """Return STORAGE_UNSUITABLE for a named storage and CANCELLED for a
+        cancelled instance, else None; sends no request."""
+        return _backup.backup_block(server, storage)
+
+    def restore_block(
+        self, configuration: ProviderConfiguration, server: Server, backup: Backup
+    ) -> BackupBlock | None:
+        """Return CANCELLED for a cancelled instance and MISMATCH for a snapshot
+        the instance does not list; reads only."""
+        if server.state == _backup.STATUS_CANCELLED:
+            return BackupBlock.CANCELLED
+        items = self._snapshot_items(configuration, server.server_identifier)
+        listed = {_backup.snapshot_id(item) for item in items}
+        return None if backup.backup_id in listed else BackupBlock.MISMATCH
+
+    def backup_consequence(
+        self,
+        configuration: ProviderConfiguration,
+        server: Server,
+        storage: str | None,
+    ) -> str:
+        """State that a snapshot is not an independent backup and its cost is not
+        stated."""
+        return _backup.backup_consequence(server)
+
+    def restore_effect(
+        self, configuration: ProviderConfiguration, server: Server, backup: Backup
+    ) -> RestoreEffect:
+        """List the newer snapshots the rollback deletes and say it cannot be undone.
+
+        Raises ProviderError when a snapshot has no date, because then it cannot
+        be told which ones are newer.
+        """
+        items = self._snapshot_items(configuration, server.server_identifier)
+        if any(_backup.is_undated(item) for item in items):
+            raise ProviderError(
+                "a snapshot has no creation date, so the newer ones cannot be told"
+            )
+        deleted = _backup.newer_than(backup, _snapshots_of(items))
+        return RestoreEffect(
+            _backup.restore_consequence(server, backup, deleted), deleted
+        )
+
+    def request_backup(
+        self,
+        configuration: ProviderConfiguration,
+        server: Server,
+        storage: str | None,
+    ) -> Operation:
+        """POST the one snapshot creation; the snapshot is found again by its
+        description, which holds the operation identifier.
+
+        A named storage is refused (FAILED, nothing sent). A rejection (401 after
+        renewal, 403, 429, 4xx) gives a FAILED operation; a timeout or a 5xx gives
+        an UNKNOWN one, because the snapshot may have been made. Raises
+        ServerNotFoundError when the identifier is not a number or the instance
+        does not exist.
+        """
+        started_at = self._clock()
+        identifier = server.server_identifier
+        number = _instance_number(identifier)
+        operation_id = _power.new_operation_id()
+        block = _backup.backup_block(server, storage)
+        if block is not None:
+            return _power.failed_operation(
+                configuration,
+                identifier,
+                PowerAction.BACKUP,
+                started_at,
+                f"the backup was not sent: {block.value}",
+                operation_id,
+            )
+        path = _backup.snapshots_path(INSTANCES_PATH, number)
+        body = _backup.snapshot_body(started_at, operation_id)
+        try:
+            response = self._authorised_post(
+                self._session, configuration.address, path, body
+            )
+            if response.status_code == _STATUS_NOT_FOUND:
+                raise ServerNotFoundError(f"No server {identifier!r} at Contabo")
+            items = _data_items(_body(response, _ACCEPTED_WRITE_STATUSES))
+        except ServerNotFoundError:
+            raise
+        except (ProviderTimeoutError, ProviderServiceError) as error:
+            return _power.unknown_operation(
+                configuration,
+                identifier,
+                PowerAction.BACKUP,
+                started_at,
+                f"the request may have reached the provider: {error}",
+                operation_id,
+            )
+        except ProviderError as error:
+            return _power.failed_operation(
+                configuration,
+                identifier,
+                PowerAction.BACKUP,
+                started_at,
+                str(error),
+                operation_id,
+            )
+        snapshot = _backup.snapshot_id(items[0]) if items else None
+        return _power.running_operation(
+            configuration,
+            identifier,
+            PowerAction.BACKUP,
+            started_at,
+            snapshot,
+            operation_id,
+        )
+
+    def request_restore(
+        self, configuration: ProviderConfiguration, server: Server, backup: Backup
+    ) -> Operation:
+        """POST the one rollback to a snapshot, with an empty body.
+
+        The snapshot identifier is the reference. Nothing is sent, and the
+        operation is FAILED with the reason, for a cancelled instance or a
+        snapshot the instance does not list. A rejection (401 after renewal, 403,
+        429, 4xx) gives a FAILED operation; a timeout or a 5xx gives an UNKNOWN
+        one, because the rollback may have started. Raises ServerNotFoundError
+        when the identifier is not a number.
+        """
+        started_at = self._clock()
+        identifier = server.server_identifier
+        number = _instance_number(identifier)
+        operation_id = _power.new_operation_id()
+        try:
+            block = self.restore_block(configuration, server, backup)
+            if block is not None:
+                raise ProviderError(f"the restore was not sent: {block.value}")
+        except ProviderError as error:
+            return _power.failed_operation(
+                configuration,
+                identifier,
+                PowerAction.RESTORE,
+                started_at,
+                str(error),
+                operation_id,
+            )
+        path = _backup.rollback_path(INSTANCES_PATH, number, backup.backup_id)
+        try:
+            response = self._authorised_post(self._session, configuration.address, path)
+            _body(response, _ACCEPTED_WRITE_STATUSES)
+        except (ProviderTimeoutError, ProviderServiceError) as error:
+            return _power.unknown_operation(
+                configuration,
+                identifier,
+                PowerAction.RESTORE,
+                started_at,
+                f"the request may have reached the provider: {error}",
+                operation_id,
+            )
+        except ProviderError as error:
+            return _power.failed_operation(
+                configuration,
+                identifier,
+                PowerAction.RESTORE,
+                started_at,
+                str(error),
+                operation_id,
+            )
+        return _power.running_operation(
+            configuration,
+            identifier,
+            PowerAction.RESTORE,
+            started_at,
+            backup.backup_id,
+            operation_id,
+        )
+
+    def list_backups(
+        self, configuration: ProviderConfiguration, server: Server
+    ) -> tuple[Backup, ...]:
+        """Return the snapshots of the instance, oldest first.
+
+        A snapshot with no creation date is left out: it cannot be placed in
+        time. One whose name starts with ``iacnf-`` is marked ``made_by_client``.
+        """
+        items = self._snapshot_items(configuration, server.server_identifier)
+        return _snapshots_of(items)
+
+    def find_backup(
+        self, configuration: ProviderConfiguration, operation: Operation
+    ) -> Backup | None:
+        """Return the snapshot whose description names the operation, or None."""
+        if operation.server_identifier is None:
+            return None
+        items = self._snapshot_items(configuration, operation.server_identifier)
+        for item in items:
+            if _backup.carries_operation(item, operation.operation_id):
+                return _backup.to_backup(item)
+        return None
+
+    def _snapshot_items(
+        self, configuration: ProviderConfiguration, identifier: str
+    ) -> list[Mapping[str, _Json]]:
+        path = _backup.snapshots_path(INSTANCES_PATH, _instance_number(identifier))
+        return self._get_pages(configuration.address, path)
+
+    def _judge_backup(
+        self, configuration: ProviderConfiguration, operation: Operation, status: str
+    ) -> Operation:
+        """Succeed when the snapshot is listed and the instance status is final."""
+        if status not in _backup.FINAL_STATUSES or operation.server_identifier is None:
+            return operation
+        items = self._snapshot_items(configuration, operation.server_identifier)
+        listed = [
+            i for i in items if _backup.carries_operation(i, operation.operation_id)
+        ]
+        if not listed:
+            return operation
+        return _power.end_operation(
+            operation, OperationState.SUCCEEDED, self._clock, "the snapshot is listed"
+        )
+
+    def _judge_restore(
+        self, configuration: ProviderConfiguration, operation: Operation, status: str
+    ) -> Operation:
+        """Succeed when the instance status is final and no snapshot newer than the
+        target is listed; fail when the target itself is no longer listed."""
+        target_id = operation.provider_reference
+        if status not in _backup.FINAL_STATUSES or operation.server_identifier is None:
+            return operation
+        items = self._snapshot_items(configuration, operation.server_identifier)
+        if any(_backup.is_undated(item) for item in items):
+            raise ProviderError(
+                "a snapshot has no creation date; the rollback cannot be judged"
+            )
+        snapshots = _snapshots_of(items)
+        target = next((s for s in snapshots if s.backup_id == target_id), None)
+        if target is None:
+            return _power.end_operation(
+                operation,
+                OperationState.FAILED,
+                self._clock,
+                "the snapshot is no longer listed",
+            )
+        if _backup.newer_than(target, snapshots):
+            return operation
+        return _power.end_operation(
+            operation,
+            OperationState.SUCCEEDED,
+            self._clock,
+            _backup.restored_detail(status),
+        )
+
     def operation_state(
         self, configuration: ProviderConfiguration, operation: Operation
     ) -> Operation:
         """Read the instance status once and judge it against the action.
+
+        A backup succeeds when a snapshot with the operation's description is
+        listed and the instance is ``running`` or ``stopped``; a restore succeeds
+        when the instance is ``running`` or ``stopped`` and no snapshot newer than
+        the target is listed. Otherwise either is still RUNNING: Contabo gives
+        neither a task nor a snapshot status (B20), and the caller's time limit
+        ends it as unknown, never as success. ``error`` fails.
 
         A removal succeeds when the instance is ``cancelled``, with the cancel
         date the provider reports in the detail (or the words that none was
@@ -430,6 +707,10 @@ class ContaboProvider:
             return self._judge_provision(operation, status)
         if operation.action is PowerAction.REMOVE:
             return self._judge_removal(operation, status, item)
+        if operation.action is PowerAction.BACKUP:
+            return self._judge_backup(configuration, operation, status)
+        if operation.action is PowerAction.RESTORE:
+            return self._judge_restore(configuration, operation, status)
         if operation.action is PowerAction.RESTART:
             return self._judge_restart(operation, status)
         if status == _TARGET_STATUS[operation.action]:
@@ -582,6 +863,20 @@ class ContaboProvider:
                 return call(client)
         except httpx.TransportError as error:
             raise _http.unreachable_error(error, self._timeout) from error
+
+
+def _instance_number(identifier: str) -> int:
+    """Return the numeric id of an instance; raise ServerNotFoundError otherwise."""
+    text = identifier.strip()
+    if not (text.isascii() and text.isdecimal()):
+        raise ServerNotFoundError(f"No server {identifier!r} at Contabo")
+    return int(text)
+
+
+def _snapshots_of(items: list[Mapping[str, _Json]]) -> tuple[Backup, ...]:
+    """Return the dated snapshots of a listing as backups, oldest first."""
+    found = [b for item in items if (b := _backup.to_backup(item)) is not None]
+    return tuple(sorted(found, key=lambda b: (b.created_at, b.backup_id)))
 
 
 def _require_all_names(credentials: Credentials) -> None:

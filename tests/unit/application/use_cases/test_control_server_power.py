@@ -315,3 +315,18 @@ def test_provision_is_refused_as_a_power_action_before_anything_is_read() -> Non
 
     assert setup.power.requests == []
     assert setup.operations.saved == []
+
+
+@pytest.mark.parametrize("action", [PowerAction.BACKUP, PowerAction.RESTORE])
+def test_backup_and_restore_are_refused_as_power_actions_before_anything_is_read(
+    action: PowerAction,
+) -> None:
+    setup = make()
+
+    with pytest.raises(NotAPowerActionError, match=action.value):
+        setup.use_case.request_power_action("Lab", "100", action, YES)
+    with pytest.raises(NotAPowerActionError, match=action.value):
+        setup.use_case.preview_power_action("Lab", "100", action)
+
+    assert setup.power.requests == []
+    assert setup.operations.saved == []

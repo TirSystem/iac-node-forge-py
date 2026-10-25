@@ -55,12 +55,13 @@ def bound_detail(text: str) -> str | None:
 
 @dataclass(frozen=True, slots=True)
 class Operation:
-    """One requested action (a power action, a provision or a removal) and its
-    outcome.
+    """One requested action (a power action, a provision, a removal, a backup or
+    a restore) and its outcome.
 
     It holds identifiers, an action, a state, two timestamps and three bounded
-    texts (a provider task identifier, a detail and, for a removal, the
-    consequence text shown before it was confirmed). It has no field for a
+    texts (a provider task identifier or snapshot identifier, a detail and, for
+    a removal, a backup or a restore, the consequence text shown before it was
+    confirmed). It has no field for a
     credential, a token or a header, and a caller never passes one: the
     adapters build ``detail`` from the provider's status or exit status only.
 

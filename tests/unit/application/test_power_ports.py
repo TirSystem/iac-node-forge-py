@@ -176,3 +176,19 @@ def test_fake_resolver_raises_when_no_power_port_exists() -> None:
 
     with pytest.raises(UnsupportedProviderError):
         resolver.power_for(CONFIGURATION)
+
+
+def test_backup_and_restore_are_not_power_actions_but_have_their_own_capabilities() -> (
+    None
+):
+    for action, name in (
+        (PowerAction.BACKUP, "backup_server"),
+        (PowerAction.RESTORE, "restore_server"),
+    ):
+        assert action not in POWER_ACTIONS
+        assert action not in capabilities.POWER_ACTION_CAPABILITY
+        assert capabilities.ACTION_CAPABILITY[action] == name
+        assert name not in capabilities.POWER_CAPABILITIES
+        assert name in capabilities.KNOWN_ACTIONS
+    assert len(POWER_ACTIONS) == 4
+    assert len(capabilities.POWER_ACTION_CAPABILITY) == 4
