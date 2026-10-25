@@ -512,6 +512,49 @@ $env:PVE_PROVISION_TEST_CONFIRM = 'create-server-iacnf-live'
 pytest -m integration -k provision -v
 ```
 
+### Full backup and restore live test
+
+WARNING: `tests/integration/test_full_backup_live.py` creates one LXC container
+as above, makes a backup archive of it with `server full-backup`'s use case,
+changes its description, restores it with the restore use case, checks that the
+description is back, then removes the container through the client and deletes
+the archive. Use only the disposable Docker Proxmox VE. Only Proxmox VE is
+tested live; Contabo is never touched (a snapshot costs money and a rollback
+deletes the newer snapshots).
+
+It needs the variables above, and a storage of the node that accepts the
+`backup` content (enable it on the storage in the Proxmox VE web interface when
+the test says none accepts backups). Two raw requests are sent by the test
+itself, apart from the client's: a `PUT` of the container configuration to change
+the description, and a `DELETE` of the archive this run made. A finalizer deletes
+the archives of this run's vmid and removes the container also when a step fails.
+
+| Variable | Meaning |
+| --- | --- |
+| `PVE_PROVISION_TEST_BACKUP_STORAGE` | optional: the storage of the archive; needed when several storages accept backups |
+| `PVE_PROVISION_TEST_EXPERIMENT` | optional: `1` also starts the container and prints how a restore over a running guest is answered (notes, not assertions) |
+
+bash:
+
+```bash
+read -rsp 'PVE token: ' PVE_TOKEN && export PVE_TOKEN
+export PVE_PROVISION_TEST_NODE='<node>' PVE_PROVISION_TEST_STORAGE='local'
+export PVE_PROVISION_TEST_TEMPLATE='local:vztmpl/<template>'
+export PVE_PROVISION_TEST_CONFIRM='create-server-iacnf-live'
+pytest -m integration -k full_backup -v
+```
+
+PowerShell:
+
+```powershell
+$env:PVE_TOKEN = Read-Host 'PVE token' -AsSecureString | ConvertFrom-SecureString -AsPlainText
+$env:PVE_PROVISION_TEST_NODE = '<node>'
+$env:PVE_PROVISION_TEST_STORAGE = 'local'
+$env:PVE_PROVISION_TEST_TEMPLATE = 'local:vztmpl/<template>'
+$env:PVE_PROVISION_TEST_CONFIRM = 'create-server-iacnf-live'
+pytest -m integration -k full_backup -v
+```
+
 ## File transfer integration tests (start a throw-away SSH server)
 
 Two opt-in tests use the container: the contract suite and a round trip through
