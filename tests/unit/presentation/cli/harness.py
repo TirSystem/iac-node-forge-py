@@ -10,6 +10,7 @@ from iac_node_forge.domain.provider_kind import ProviderKind
 from iac_node_forge.presentation.cli.main import main
 from iac_node_forge.presentation.cli.services import CliServices
 from tests.unit.application.fakes import (
+    FakeBackupStore,
     FakeClock,
     FakeConfigurationStore,
     FakeCredentialPrompt,
@@ -47,6 +48,7 @@ class Harness:
         default_factory=FakeDesiredConfigurationStore
     )
     intents: FakeProvisionIntentStore = field(default_factory=FakeProvisionIntentStore)
+    backups: FakeBackupStore = field(default_factory=FakeBackupStore)
     clock: FakeClock = field(default_factory=FakeClock)
     interactive: bool = False
     credential_store: FakeCredentialStore = field(default_factory=FakeCredentialStore)
@@ -75,6 +77,7 @@ class Harness:
             operations=self.operations,
             desired_configurations=self.desired_configurations,
             provision_intents=self.intents,
+            backups=self.backups,
             credential_store=self.credential_store,
             credential_prompt=self.prompt,
             provider_factory=self._factory,

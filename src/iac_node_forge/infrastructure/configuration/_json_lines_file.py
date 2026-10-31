@@ -6,8 +6,8 @@ reference, and an operation holds identifiers, states, times and bounded
 texts. Unknown record types and unknown fields are rejected on read.
 
 The file is read whole and written whole, so the stores that share it
-(configuration, operations, desired configurations and intents) keep each
-other's records.
+(configuration, operations, desired configurations, intents, server accesses
+and backup records) keep each other's records.
 """
 
 import json
@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from iac_node_forge.application.errors import ConfigurationFormatError
+from iac_node_forge.domain.backup_record import BackupRecord
 from iac_node_forge.domain.credential_reference import CredentialReference
 from iac_node_forge.domain.desired_configuration import DesiredConfiguration
 from iac_node_forge.domain.errors import DomainError
@@ -32,6 +33,7 @@ from iac_node_forge.domain.provider_kind import ProviderKind
 from iac_node_forge.domain.provision_intent import IntentId, ProvisionIntent
 from iac_node_forge.domain.server_access import ServerAccess
 from iac_node_forge.infrastructure.configuration import _access_rows as access
+from iac_node_forge.infrastructure.configuration import _backup_rows as backup
 from iac_node_forge.infrastructure.configuration import _provisioning_rows as prov
 from iac_node_forge.infrastructure.configuration._rows import Row, optional_text, text
 
@@ -80,6 +82,7 @@ _FIELDS: dict[str, frozenset[str]] = {
     ),
     **prov.FIELDS,
     **access.FIELDS,
+    **backup.FIELDS,
 }
 # Fields a file written before the removal of a server (MIL-006) does not have;
 # a missing one reads as null, and every write includes them.
@@ -116,6 +119,7 @@ class Snapshot:
     desired: dict[prov.DesiredKey, DesiredConfiguration] = field(default_factory=dict)
     intents: dict[IntentId, ProvisionIntent] = field(default_factory=dict)
     accesses: dict[access.AccessKey, ServerAccess] = field(default_factory=dict)
+    backups: dict[backup.BackupKey, BackupRecord] = field(default_factory=dict)
 
 
 def read_snapshot(path: Path) -> Snapshot:
@@ -145,6 +149,7 @@ def write_snapshot(path: Path, snapshot: Snapshot) -> None:
     for intent in snapshot.intents.values():
         rows += prov.intent_rows(intent)
     rows += [access.access_row(a) for a in snapshot.accesses.values()]
+    rows += [backup.backup_row(b) for b in snapshot.backups.values()]
     payload = "".join(
         json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
         for row in rows
@@ -283,6 +288,9 @@ def _collect(rows: list[Row], snapshot: Snapshot) -> None:
             server_access = access.access_from_row(row)
             key = (server_access.configuration_id, server_access.server_identifier)
             snapshot.accesses[key] = server_access
+        elif kind == backup.BACKUP:
+            record = backup.backup_from_row(row)
+            snapshot.backups[backup.key_of(record)] = record
         else:
             records.add(row)
     snapshot.desired = records.desired_configurations()

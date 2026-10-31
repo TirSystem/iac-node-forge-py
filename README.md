@@ -61,6 +61,9 @@ iac-node-forge server remove Cloud 101 --yes --confirm-unmanaged 101
 iac-node-forge server access Lab 101 --user deploy --host 192.0.2.10
 iac-node-forge server backup Lab 101 /etc/nginx --to ./backup   # read-only on the server, verified
 iac-node-forge server restore Lab 101 ./site --to /var/www      # replaces; asks you to type the id
+iac-node-forge server full-backup Lab 101        # archive (Proxmox VE) or snapshot (Contabo); asks a yes
+iac-node-forge server full-backups Lab 101       # what the provider holds for the server
+iac-node-forge server full-restore Lab 101 <backup-id>   # overwrites the guest; cannot be undone; type the id
 ```
 
 A configuration is named by its display name (case is ignored) or its id.
@@ -225,12 +228,68 @@ iac-node-forge server restore Lab 101 ./site --to /var/www [--report-dir DIR] [-
 - `ssh` runs with `BatchMode`, so your key or agent must log in without a
   prompt. No operation is recorded: the command runs to its end.
 
+### Back up and restore a whole server
+
+`server full-backup`, `server full-backups` and `server full-restore` (UC-018,
+UC-019, ADR-0010) back up and restore the whole server at its provider. They are
+called `full-` because `server backup` and `server restore` copy files (above).
+No copy is made to your computer: the provider keeps the backup.
+
+```
+iac-node-forge server full-backup Lab 101 [--storage S] [--yes] [--no-wait] [--timeout S] [--poll-interval S]
+iac-node-forge server full-backups Lab 101
+iac-node-forge server full-restore Lab 101 <backup-id> [--yes] [--confirm-unmanaged 101] [--no-wait] [--timeout S] [--poll-interval S]
+```
+
+- The two providers mean different things by a backup, and the preview says
+  which. At Proxmox VE it is an **archive**: a file written to a storage that
+  accepts backups (`--storage` names one; without it the only such storage is
+  used, several are listed and you choose, none is a refusal). The dump keeps
+  older backups. At Contabo it is a **snapshot**, which is not an independent
+  backup: Contabo keeps it on the same disk system as the server, limits how
+  many there are, deletes it on a date it sets and does not state its cost.
+- `full-backup` changes nothing on the server and deletes nothing, so it asks a
+  plain yes (`--yes` without a terminal; without it the exit code is 1 and
+  nothing is sent). It follows the operation and then tells where the backup is
+  kept, its identifier, its short alias and its kind; the backup is recorded in
+  the configuration file (`backup` line) once the provider lists it.
+- `full-backups` lists what the provider holds for the server, oldest first,
+  also backups made by other tools, with the operation that made each of this
+  client's backups. A recorded backup that the provider no longer lists is shown
+  apart and its record is kept.
+- A backup is named for `full-restore` by its identifier or by its 8-character
+  alias, when the alias is unique.
+- **A restore cannot be undone.** At Proxmox VE the guest, its disks and its
+  configuration are overwritten by the archive (what the overwrite leaves
+  untouched is not documented). At Contabo the instance is rolled back to the
+  snapshot and every newer snapshot is deleted; the preview lists them. The
+  command prints this first and records the text with the operation.
+- The confirmation is the same as for `server remove`: you type the server
+  identifier exactly (a name or a prefix is refused), and a server this client
+  does not manage needs it typed a second time. Without a terminal `--yes` is
+  required, the identifier on the command line counts as typed and, for an
+  unmanaged server, `--confirm-unmanaged <identifier>` is the second typing.
+- A running Proxmox VE guest is refused and never stopped for you: shut it down
+  first. A cancelled Contabo instance is reported as not available. A backup of
+  another kind of guest, or one the provider does not list, is refused. Nothing
+  is sent or recorded in these cases.
+- Exactly one request is sent. A rejection ends the operation as `failed`; a
+  lost answer or a time limit ends it as `unknown`; it is never repeated. When a
+  restore succeeds the state of the server is read, shown and recorded in the
+  `detail` of the operation. `operation <id>` completes a backup or a restore
+  that has ended.
+- A provider that does not declare `backup_server` or `restore_server` is shown
+  as unsupported by these commands and by `capabilities`; nothing is sent.
+
 ### Operation record
 
-Every power, provision or removal request is recorded as one `operation` line of
+Every power, provision, removal, backup or restore request is recorded as one `operation` line of
 the same configuration file (identifier, configuration, server, action, state,
 start and end time, the provider's task reference, a bounded detail text and,
-for a removal, the consequence text). It never
+for a removal, a backup or a restore, the consequence text). A backup that
+this client made is also kept as one `backup` line (configuration, server,
+backup identifier, kind, place, creation time and the operation); it is never
+deleted by the client. It never
 holds a credential, a token or a header. `iac-node-forge operation <id>` shows
 it, also from another process.
 
@@ -246,7 +305,7 @@ Output is plain text on standard output; errors go to standard error.
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Success |
-| 1 | A failure you can act on: provider unreachable or credentials rejected (Proxmox VE: API token; Contabo: client ID, client secret, API user and API password), configuration, server or operation not found, unknown option kind for the provider, nothing configured, a provider failed in `servers`; for a power command also an unsupported action, a server already in the state, a missing or refused confirmation, a request the provider rejected, and an operation that ended `failed` or `unknown`; for `server define` a description that is not valid; for `server provision` an invalid or unsupported description, an existing server name or an unfinished earlier request, a missing confirmation, a rejected or failed creation; for `server access|backup|restore` a missing access, a stopped server, an unknown or changed host key, a missing path, a destination that is not empty or has no room, a wrong or missing confirmation, or a copy that is not verified; for `server remove` an unsupported removal, a running or already removed server, a wrong typed identifier, a missing or refused confirmation, a rejected or failed removal |
+| 1 | A failure you can act on: provider unreachable or credentials rejected (Proxmox VE: API token; Contabo: client ID, client secret, API user and API password), configuration, server or operation not found, unknown option kind for the provider, nothing configured, a provider failed in `servers`; for a power command also an unsupported action, a server already in the state, a missing or refused confirmation, a request the provider rejected, and an operation that ended `failed` or `unknown`; for `server define` a description that is not valid; for `server provision` an invalid or unsupported description, an existing server name or an unfinished earlier request, a missing confirmation, a rejected or failed creation; for `server access|backup|restore` a missing access, a stopped server, an unknown or changed host key, a missing path, a destination that is not empty or has no room, a wrong or missing confirmation, or a copy that is not verified; for `server remove` an unsupported removal, a running or already removed server, a wrong typed identifier, a missing or refused confirmation, a rejected or failed removal; for `server full-backup` an unsupported backup, an unavailable server, no storage (or several and none named) that fits, or a missing confirmation; for `server full-restore` an unsupported restore, a backup that is not found or is another server's, a running Proxmox VE guest, a wrong typed identifier, a missing or refused confirmation, a rejected or failed restore |
 | 2 | Usage error |
 
 ## Checks

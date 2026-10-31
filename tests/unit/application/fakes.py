@@ -42,6 +42,7 @@ from iac_node_forge.application.ports import (
 from iac_node_forge.domain.access_result import AccessResult
 from iac_node_forge.domain.backup import Backup
 from iac_node_forge.domain.backup_kind import BackupKind
+from iac_node_forge.domain.backup_record import BackupRecord
 from iac_node_forge.domain.capability import Capability
 from iac_node_forge.domain.credential_reference import CredentialReference
 from iac_node_forge.domain.credentials import Credentials
@@ -420,6 +421,42 @@ class FakeOperationStore:
         if operation_id not in self.operations:
             raise OperationNotFoundError(operation_id)
         return self.operations[operation_id]
+
+
+class FakeBackupStore:
+    """Fake BackupStore keeping records in memory; ``saved`` lists every save."""
+
+    def __init__(self) -> None:
+        self.records: dict[tuple[ConfigurationId, str, str], BackupRecord] = {}
+        self.saved: list[BackupRecord] = []
+
+    def save(self, record: BackupRecord) -> None:
+        key = (record.configuration_id, record.server_identifier, record.backup_id)
+        self.records[key] = record
+        self.saved.append(record)
+
+    def load(
+        self,
+        configuration_id: ConfigurationId,
+        server_identifier: str,
+        backup_id: str,
+    ) -> BackupRecord | None:
+        return self.records.get((configuration_id, server_identifier, backup_id))
+
+    def load_for(
+        self, configuration_id: ConfigurationId, server_identifier: str
+    ) -> tuple[BackupRecord, ...]:
+        return tuple(
+            r
+            for r in self.records.values()
+            if r.configuration_id == configuration_id
+            and r.server_identifier == server_identifier
+        )
+
+    def load_by_operation(self, operation_id: OperationId) -> BackupRecord | None:
+        return next(
+            (r for r in self.records.values() if r.operation_id == operation_id), None
+        )
 
 
 class FakeDesiredConfigurationStore:

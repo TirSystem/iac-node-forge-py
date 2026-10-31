@@ -9,6 +9,7 @@ from iac_node_forge.application.ports import ProviderPort
 from iac_node_forge.domain.credentials import Credentials
 from iac_node_forge.domain.provider_kind import ProviderKind
 from iac_node_forge.infrastructure.configuration import (
+    JsonLinesBackupStore,
     JsonLinesConfigurationStore,
     JsonLinesDesiredConfigurationStore,
     JsonLinesOperationStore,
@@ -88,6 +89,7 @@ def build_services(
         operations=JsonLinesOperationStore(path),
         desired_configurations=JsonLinesDesiredConfigurationStore(path),
         provision_intents=JsonLinesProvisionIntentStore(path),
+        backups=JsonLinesBackupStore(path),
         credential_store=PlatformCredentialStore(),
         credential_prompt=ConsoleCredentialPrompt(),
         provider_factory=provider_factory,

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import TextIO
 
 from iac_node_forge.application.ports import (
+    BackupStore,
     ConfigurationStore,
     CredentialPrompt,
     CredentialStore,
@@ -57,6 +58,7 @@ class CliServices:
     operations: OperationStore
     desired_configurations: DesiredConfigurationStore
     provision_intents: ProvisionIntentStore
+    backups: BackupStore
     credential_store: CredentialStore
     credential_prompt: CredentialPrompt
     provider_factory: ProviderFactory

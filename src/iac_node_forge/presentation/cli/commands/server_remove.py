@@ -10,7 +10,6 @@ import argparse
 from collections.abc import Sequence
 
 from iac_node_forge.application.dto import (
-    Confirmation,
     OperationSummary,
     RemovalOutcome,
     RemovalPreview,
@@ -22,6 +21,10 @@ from iac_node_forge.presentation.cli.commands._follow import (
     follow_and_report,
 )
 from iac_node_forge.presentation.cli.commands._removal import build_remove_server
+from iac_node_forge.presentation.cli.commands._typed_confirmation import (
+    typed_confirmation,
+    write_not_confirmed,
+)
 from iac_node_forge.presentation.cli.operation_output import (
     write_detail_line,
     write_operation,
@@ -115,7 +118,14 @@ def run(arguments: argparse.Namespace, services: CliServices) -> int:
     _write_preview(services, preview)
     if preview.outcome is not RemovalOutcome.READY:
         return _not_sent(services, preview.outcome, preview.reason, preview, False)
-    confirmation = _confirmation(services, arguments, preview)
+    confirmation = typed_confirmation(
+        services,
+        "remove",
+        arguments.identifier,
+        preview.managed,
+        arguments.yes,
+        arguments.confirm_unmanaged,
+    )
     result = remove.request_removal(
         arguments.configuration, arguments.identifier, confirmation
     )
@@ -173,33 +183,6 @@ def _write_preview(services: CliServices, preview: RemovalPreview) -> None:
         write_line(out, _NOT_MANAGED_NOTICE)
 
 
-def _confirmation(
-    services: CliServices, arguments: argparse.Namespace, preview: RemovalPreview
-) -> Confirmation:
-    """The typed identifier and, when needed, the identifier typed again."""
-    if not services.is_interactive:
-        return Confirmation(
-            given=arguments.yes,
-            typed_identifier=arguments.identifier,
-            unmanaged_identifier=arguments.confirm_unmanaged,
-        )
-    typed = services.read_line(
-        f"Type the server identifier {preview.server_identifier!r} to remove the "
-        "server: "
-    ).strip()
-    if not typed:
-        return Confirmation(given=False)
-    again = arguments.confirm_unmanaged
-    if not preview.managed and again is None and typed == preview.server_identifier:
-        again = services.read_line(
-            "This server is not managed by this client; type its identifier "
-            "again to confirm: "
-        ).strip()
-    return Confirmation(
-        given=True, typed_identifier=typed, unmanaged_identifier=again or None
-    )
-
-
 def _not_sent(
     services: CliServices,
     outcome: RemovalOutcome,
@@ -211,7 +194,9 @@ def _not_sent(
     err = services.stderr
     server = f"server {preview.server_identifier!r}"
     if outcome is RemovalOutcome.NOT_CONFIRMED:
-        _not_confirmed(services, preview, interactive)
+        write_not_confirmed(
+            services, "removal", preview.server_identifier, preview.managed, interactive
+        )
         return exit_codes.FAILURE
     write_line(err, f"error: {server} was not removed: {reason}")
     write_line(err, f"Hint: {_hint(outcome, preview)} No request was sent.")
@@ -239,25 +224,6 @@ def _hint(outcome: RemovalOutcome, preview: RemovalPreview) -> str:
     if outcome is RemovalOutcome.ALREADY_REMOVED:
         return "nothing is left to remove."
     return f"type {identifier!r} exactly."
-
-
-def _not_confirmed(
-    services: CliServices, preview: RemovalPreview, interactive: bool
-) -> None:
-    err = services.stderr
-    if interactive:
-        write_line(err, "error: the removal was not confirmed and was cancelled")
-        write_line(err, "Hint: no request was sent.")
-        return
-    write_line(
-        err,
-        f"error: the removal of server {preview.server_identifier!r} needs "
-        "confirmation and no terminal is available to ask",
-    )
-    needed = "--yes"
-    if not preview.managed:
-        needed += f" --confirm-unmanaged {preview.server_identifier}"
-    write_line(err, f"Hint: repeat the command with {needed}. No request was sent.")
 
 
 def _rejected(

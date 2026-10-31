@@ -18,6 +18,9 @@ from iac_node_forge.presentation.cli.commands import (
     server,
     server_access,
     server_backup,
+    server_full_backup,
+    server_full_backups,
+    server_full_restore,
     server_power,
     server_provision,
     server_remove,
@@ -53,6 +56,12 @@ exit codes:
      for 'server remove' also: removal is unsupported, the server is running or
      already removed, the typed identifier is wrong, the confirmation is missing
      or refused, or the provider rejected the request;
+     for 'server full-backup' also: the backup is unsupported, the server is not
+     available, no storage (or several, none named) fits, or the confirmation is
+     missing; for 'server full-restore' also: restore is unsupported, the backup
+     is not found or is another server's, a Proxmox VE guest is running, the typed
+     identifier is wrong, the confirmation is missing or refused, or the provider
+     rejected the request;
      for 'server access|backup|restore' also: no access is recorded, the server
      is not running, the host key is unknown or changed, a path is missing, the
      destination is not empty or has no room, the confirmation is missing or
@@ -85,6 +94,22 @@ removal (deleting or cancelling a server is a write and cannot be undone):
       operation; an unmanaged server needs the identifier typed twice;
       a running server is refused, never stopped; see 'server remove --help'
 
+whole-server backup and restore at the provider (no copy to this computer):
+  server full-backup <configuration> <identifier> [--storage S] [--yes]
+                     [--no-wait] [--timeout T] [--poll-interval S]
+      states what the backup is (an archive on a storage at Proxmox VE, a
+      snapshot at Contabo, which is not an independent backup), asks for a yes,
+      sends one request, follows it and tells where the backup is kept
+  server full-backups <configuration> <identifier>
+      lists the backups the provider holds for the server
+  server full-restore <configuration> <identifier> <backup-id> [--yes]
+                      [--confirm-unmanaged ID] [--no-wait] [--timeout T]
+      states what is overwritten (Proxmox VE) or deleted (Contabo: the newer
+      snapshots) and that it cannot be undone, asks you to type the identifier,
+      sends one request, follows it and reports and records the state of the
+      server; a running Proxmox VE guest is refused, never stopped;
+      see 'server full-backup --help' and 'server full-restore --help'
+
 files on a server (over your own ssh; no password, key or token is stored):
   server access <configuration> <identifier> --user USER [--host H] [--port P]
       records how to reach the server
@@ -107,6 +132,9 @@ _SERVER_GROUPS: tuple[tuple[_Matcher, _ParserBuilder], ...] = (
     (server_provision.is_provision_request, server_provision.build_parser),
     (server_remove.is_remove_request, server_remove.build_parser),
     (server_access.is_access_request, server_access.build_parser),
+    (server_full_backup.is_full_backup_request, server_full_backup.build_parser),
+    (server_full_backups.is_full_backups_request, server_full_backups.build_parser),
+    (server_full_restore.is_full_restore_request, server_full_restore.build_parser),
     (server_backup.is_backup_request, server_backup.build_parser),
     (server_restore.is_restore_request, server_restore.build_parser),
 )
@@ -118,7 +146,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog=PROGRAM,
         description="Command-line client for Proxmox VE and Contabo servers: read "
         "servers and options, define and provision servers, start, shut down, stop "
-        "or restart a server, and remove a server.",
+        "or restart a server, remove a server, and back up or restore a whole "
+        "server.",
         epilog=_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

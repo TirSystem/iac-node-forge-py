@@ -21,16 +21,17 @@ def add_parser(subparsers: Subparsers) -> None:
     """Register ``operation``."""
     parser = subparsers.add_parser(
         "operation",
-        help="show a recorded operation (a power action, a provision or a removal)",
+        help="show a recorded operation (power, provision, removal, backup, restore)",
         description="Show the state, times and detail of a recorded operation. "
         "With --follow, an operation that is still running is followed to its "
-        "end first. A provision or a removal that has ended is also completed: the "
-        "server is recorded as managed or its record is ended, or the state left at "
-        "the provider is shown.",
+        "end first. A provision, a removal, a backup or a restore that has ended is "
+        "also completed: the server is recorded as managed or its record is ended, "
+        "the backup is located and recorded, the state of a restored server is "
+        "recorded, or the state left at the provider is shown.",
     )
     parser.add_argument(
         "operation_id",
-        help="identifier printed by the power, provision or remove command",
+        help="identifier printed by the command that made the operation",
     )
     parser.add_argument(
         "--follow",

@@ -1,10 +1,13 @@
 """Storage adapters of the JSON Lines file of the client.
 
 They keep configurations, operations, desired configurations, provision
-intents and the access of servers.
+intents, the access of servers and the records of backups.
 """
 
 # The long imports below carry noqa: E501; a module path cannot be split.
+from iac_node_forge.infrastructure.configuration.json_lines_backup_store import (
+    JsonLinesBackupStore,
+)
 from iac_node_forge.infrastructure.configuration.json_lines_desired_configuration_store import (  # noqa: E501
     JsonLinesDesiredConfigurationStore,
 )
@@ -23,6 +26,7 @@ from iac_node_forge.infrastructure.configuration.json_lines_store import (
 )
 
 __all__ = [
+    "JsonLinesBackupStore",
     "JsonLinesConfigurationStore",
     "JsonLinesDesiredConfigurationStore",
     "JsonLinesOperationStore",
